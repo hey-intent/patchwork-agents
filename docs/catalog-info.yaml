@@ -1,0 +1,280 @@
+apiVersion: backstage.io/v1alpha1
+kind: System
+metadata:
+  name: ai-pr-bot
+  description: >
+    Orchestrateur Kubernetes qui recoit des webhooks GitHub et lance des jobs IA
+    (Claude Code / OpenAI Codex / Aider) pour resoudre automatiquement des
+    issues et creer des pull requests.
+  tags:
+    - kubernetes
+    - ai
+    - github
+    - automation
+    - poc
+  annotations:
+    backstage.io/techdocs-ref: dir:.
+  links:
+    - url: https://github.com/your-org/k3-github-pr
+      title: GitHub Repository
+      icon: github
+spec:
+  owner: group:platform-team
+  domain: developer-productivity
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: ai-pr-orchestrator
+  description: >
+    FastAPI service qui recoit les webhooks GitHub, valide les signatures HMAC,
+    genere des tokens GitHub ephemeres (GitHub App JWT), et cree des Jobs Kubernetes.
+  tags:
+    - python
+    - fastapi
+    - kubernetes
+  annotations:
+    backstage.io/techdocs-ref: dir:.
+    backstage.io/kubernetes-namespace: ai-bot
+    backstage.io/kubernetes-label-selector: app=orchestrator
+    backstage.io/source-location: url:https://github.com/your-org/k3-github-pr/tree/main/app/
+spec:
+  type: service
+  lifecycle: experimental
+  owner: group:platform-team
+  system: ai-pr-bot
+  providesApis:
+    - ai-pr-webhook-api
+  dependsOn:
+    - component:worker-claude
+    - component:worker-codex
+    - component:worker-aider
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: worker-claude
+  description: >
+    Job Kubernetes ephemere qui clone un repo, invoque Claude Code CLI pour
+    resoudre une issue, pousse une branche et cree une PR.
+  tags:
+    - ai
+    - claude
+    - kubernetes
+    - bash
+  annotations:
+    backstage.io/kubernetes-namespace: ai-bot
+    backstage.io/source-location: url:https://github.com/your-org/k3-github-pr/tree/main/images/worker-claude/
+spec:
+  type: service
+  lifecycle: experimental
+  owner: group:platform-team
+  system: ai-pr-bot
+  dependsOn:
+    - resource:anthropic-api-key
+    - component:git-workflow-library
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: worker-codex
+  description: >
+    Job Kubernetes ephemere qui clone un repo, invoque OpenAI Codex CLI pour
+    resoudre une issue, pousse une branche et cree une PR.
+  tags:
+    - ai
+    - openai
+    - kubernetes
+    - nodejs
+  annotations:
+    backstage.io/kubernetes-namespace: ai-bot
+    backstage.io/source-location: url:https://github.com/your-org/k3-github-pr/tree/main/images/worker-codex/
+spec:
+  type: service
+  lifecycle: experimental
+  owner: group:platform-team
+  system: ai-pr-bot
+  dependsOn:
+    - resource:openai-api-key
+    - component:git-workflow-library
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: worker-aider
+  description: >
+    Job Kubernetes ephemere qui clone un repo, invoque Aider CLI (via
+    OpenRouter) pour resoudre une issue, pousse une branche et cree une PR.
+  tags:
+    - ai
+    - openrouter
+    - aider
+    - kubernetes
+    - bash
+  annotations:
+    backstage.io/kubernetes-namespace: ai-bot
+    backstage.io/source-location: url:https://github.com/your-org/k3-github-pr/tree/main/images/worker-aider/
+spec:
+  type: service
+  lifecycle: experimental
+  owner: group:platform-team
+  system: ai-pr-bot
+  dependsOn:
+    - resource:openrouter-api-key
+    - component:git-workflow-library
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: git-workflow-library
+  description: >
+    Bibliotheque Bash partagee (git_workflow.sh) utilisee par tous les workers
+    pour les operations git (clone, branch, push) et la creation de PR.
+  tags:
+    - bash
+    - git
+    - shared-library
+  annotations:
+    backstage.io/source-location: url:https://github.com/your-org/k3-github-pr/tree/main/providers/
+spec:
+  type: library
+  lifecycle: experimental
+  owner: group:platform-team
+  system: ai-pr-bot
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: anthropic-api-key
+  description: Cle API Anthropic pour le worker Claude
+  tags:
+    - secret
+    - kubernetes
+spec:
+  type: kubernetes-secret
+  owner: group:platform-team
+  system: ai-pr-bot
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: openai-api-key
+  description: Cle API OpenAI pour le worker Codex
+  tags:
+    - secret
+    - kubernetes
+spec:
+  type: kubernetes-secret
+  owner: group:platform-team
+  system: ai-pr-bot
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: openrouter-api-key
+  description: Cle API OpenRouter pour le worker Aider
+  tags:
+    - secret
+    - kubernetes
+spec:
+  type: kubernetes-secret
+  owner: group:platform-team
+  system: ai-pr-bot
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: github-app-credentials
+  description: >
+    GitHub App ID et cle privee PEM, utilises par l'orchestrateur pour generer
+    des tokens d'installation ephemeres (JWT RS256).
+  tags:
+    - secret
+    - kubernetes
+    - github
+spec:
+  type: kubernetes-secret
+  owner: group:platform-team
+  system: ai-pr-bot
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: API
+metadata:
+  name: ai-pr-webhook-api
+  description: API REST de l'orchestrateur AI PR Bot (webhook GitHub + endpoints admin).
+  tags:
+    - rest
+    - webhook
+    - github
+spec:
+  type: openapi
+  lifecycle: experimental
+  owner: group:platform-team
+  system: ai-pr-bot
+  definition: |
+    openapi: 3.0.0
+    info:
+      title: AI PR Bot Orchestrator API
+      version: 0.1.0
+      description: Recoit les webhooks GitHub et gere les jobs IA
+    paths:
+      /webhook/github:
+        post:
+          summary: Webhook GitHub
+          description: >
+            Recoit les evenements GitHub (issue labeled ai-pr-*) et lance
+            le job IA correspondant.
+          security:
+            - webhookSignature: []
+          responses:
+            '200':
+              description: Job cree
+            '400':
+              description: Payload invalide
+            '401':
+              description: Signature HMAC invalide
+      /healthz:
+        get:
+          summary: Health check
+          responses:
+            '200':
+              description: OK
+      /jobs/run:
+        post:
+          summary: Lancer un job manuellement (admin)
+          security:
+            - bearerAuth: []
+          responses:
+            '200':
+              description: Job lance
+            '401':
+              description: Token invalide
+      /secrets/github-app:
+        get:
+          summary: Verifier la config GitHub App (admin)
+          security:
+            - bearerAuth: []
+          responses:
+            '200':
+              description: Config valide
+            '401':
+              description: Token invalide
+    components:
+      securitySchemes:
+        webhookSignature:
+          type: apiKey
+          in: header
+          name: X-Hub-Signature-256
+        bearerAuth:
+          type: http
+          scheme: bearer

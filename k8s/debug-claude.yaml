@@ -1,0 +1,50 @@
+# WARNING: Debug-only manifest. Do not deploy in production.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: debug-claude
+  namespace: ai-bot
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: debug-claude
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: worker
+          image: worker-claude:latest
+          imagePullPolicy: Never
+          env:
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: anthropic-api-key
+                  key: ANTHROPIC_API_KEY
+          command: ["/bin/sh", "-lc"]
+          args:
+            - |
+              set -eu
+
+              echo "=== DEBUG (worker) ==="
+              echo "whoami: $(whoami || true)"
+              echo "HOME=$HOME"
+              echo "date -u: $(date -u || true)"
+
+              echo "--- which claude ---"
+              echo "[run] $(command -v claude || true)"
+              claude --version || true
+
+              echo "--- API key check ---"
+              if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+                echo "ANTHROPIC_API_KEY is set (${#ANTHROPIC_API_KEY} chars)"
+              else
+                echo "ANTHROPIC_API_KEY is NOT set"
+              fi
+              echo "=== END DEBUG ==="
+
+              claude -p "Quelle est la capitale de la France ?" || true
+
+              echo "[debug] sleeping to allow kubectl exec..."
+              sleep 36000

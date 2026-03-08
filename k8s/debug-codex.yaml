@@ -1,0 +1,57 @@
+# WARNING: Debug-only manifest. Do not deploy in production.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: debug-codex
+  namespace: ai-bot
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: debug-codex
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: worker
+          image: worker-codex:latest
+          imagePullPolicy: Never
+          env:
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: openai-api-key
+                  key: OPENAI_API_KEY
+          command: ["/bin/sh", "-lc"]
+          args:
+            - |
+              set -eu
+
+              echo "=== DEBUG (worker-codex) ==="
+              echo "whoami: $(whoami || true)"
+              echo "HOME=$HOME"
+              echo "date -u: $(date -u || true)"
+
+              echo "--- which codex ---"
+              echo "[run] $(command -v codex || true)"
+              codex --version || true
+
+              echo "--- API key check ---"
+              if [ -n "${OPENAI_API_KEY:-}" ]; then
+                echo "OPENAI_API_KEY is set (${#OPENAI_API_KEY} chars)"
+              else
+                echo "OPENAI_API_KEY is NOT set"
+              fi
+              echo "--- codex test ---"
+              mkdir -p /tmp/test-repo && cd /tmp/test-repo && git init
+              echo "print('hello')" > main.py
+              git add . && git commit -m "init"
+              codex exec --dangerously-bypass-approvals-and-sandbox \
+                "Add a comment at the top of main.py that says: capital of France is Paris" || true
+              echo "--- main.py after codex ---"
+              cat main.py || true
+
+              echo "=== END DEBUG ==="
+
+              echo "[debug] sleeping to allow kubectl exec..."
+              sleep 36000

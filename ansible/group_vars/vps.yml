@@ -1,0 +1,38 @@
+# --- Cluster ---
+k3s_version: "v1.31.4+k3s1" # pin a stable version
+kubeconfig_path: /etc/rancher/k3s/k3s.yaml
+
+# --- Project ---
+project_dir: /opt/patchwork-agent
+repo_url: "https://github.com/hey-intent/patchwork-agents.git"
+repo_branch: main
+
+# --- Images ---
+orchestrator_image: "ghcr.io/hey-intent/orchestrator:latest"
+worker_images:
+  - name: worker-claude
+    dockerfile: images/worker-claude/Dockerfile
+  - name: worker-codex
+    dockerfile: images/worker-codex/Dockerfile
+  - name: worker-aider
+    dockerfile: images/worker-aider/Dockerfile
+
+# --- K8s namespace ---
+namespace: ai-bot
+
+# --- Secrets (override via --extra-vars or ansible-vault) ---
+# NEVER commit real values here.
+github_app_id: "CHANGE_ME"
+github_private_key_path: "/path/to/github-app.pem"
+github_private_key_local_path: "/path/to/github-app.pem"
+webhook_secret: "CHANGE_ME"
+admin_token: "CHANGE_ME"
+
+# Provider API keys (leave empty to skip)
+anthropic_api_key: ""
+openai_api_key: ""
+openrouter_api_key: ""
+
+# --- Traefik / TLS ---
+traefik_acme_email: "you@example.com"
+ingress_host: "bot.yourdomain.com"

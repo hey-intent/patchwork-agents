@@ -1,0 +1,64 @@
+# WARNING: Debug-only manifest. Do not deploy in production.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: debug-aider
+  namespace: ai-bot
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: debug-aider
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: worker
+          image: worker-aider:latest
+          imagePullPolicy: Never
+          env:
+            - name: OPENROUTER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: openrouter-api-key
+                  key: OPENROUTER_API_KEY
+            - name: AIDER_MODEL
+              value: "openrouter/anthropic/claude-sonnet-4"
+          command: ["/bin/sh", "-lc"]
+          args:
+            - |
+              set -eu
+
+              echo "=== DEBUG (worker-aider) ==="
+              echo "whoami: $(whoami || true)"
+              echo "HOME=$HOME"
+              echo "date -u: $(date -u || true)"
+
+              echo "--- which aider ---"
+              echo "[run] $(command -v aider || true)"
+              aider --version || true
+
+              echo "--- API key check ---"
+              if [ -n "${OPENROUTER_API_KEY:-}" ]; then
+                echo "OPENROUTER_API_KEY is set (${#OPENROUTER_API_KEY} chars)"
+              else
+                echo "OPENROUTER_API_KEY is NOT set"
+              fi
+
+              echo "--- aider test ---"
+              mkdir -p /tmp/test-repo && cd /tmp/test-repo && git init
+              git config user.name "test" && git config user.email "test@test.com"
+              echo "print('hello')" > main.py
+              git add . && git commit -m "init"
+              aider \
+                --model "$AIDER_MODEL" \
+                --api-key openrouter="$OPENROUTER_API_KEY" \
+                --yes-always \
+                --message "Add a comment at the top of main.py that says: capital of France is Paris" || true
+              echo "--- main.py after aider ---"
+              cat main.py || true
+
+              echo "=== END DEBUG ==="
+
+              echo "[debug] sleeping to allow kubectl exec..."
+              sleep 36000

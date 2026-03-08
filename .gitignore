@@ -1,0 +1,14 @@
+.vscode/
+.claude/
+.local/
+.env*
+__pycache__/
+*.pyc
+*.egg-info/
+.DS_Store
+.idea/
+node_modules/
+*.tar
+k8s/secrets/*.values.yaml
+*.pem
+inventory-prod.ini

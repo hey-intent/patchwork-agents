@@ -1,0 +1,11 @@
+ **/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+.venv/
+.env
+.git/
+.gitignore
+README.md
+k8s/
+scripts/

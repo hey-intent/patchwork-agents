@@ -1,0 +1,34 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ai-issue-aider-manual
+  namespace: ai-bot
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: worker
+          image: worker-aider:latest
+          imagePullPolicy: Never
+          env:
+            - name: OPENROUTER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: openrouter-api-key
+                  key: OPENROUTER_API_KEY
+            - name: AI_PROVIDER
+              value: "aider"
+            - name: AIDER_MODEL
+              value: "openrouter/anthropic/claude-sonnet-4"
+            # Ephemeral installation token (generate via GitHub App or use a PAT)
+            - name: GITHUB_TOKEN
+              value: "CHANGE_ME"
+            # --- Fill in before running ---
+            - name: GITHUB_REPO
+              value: "CHANGE_ME"
+            - name: GITHUB_ISSUE_NUMBER
+              value: "CHANGE_ME"
+            - name: GITHUB_INSTALLATION_ID
+              value: "CHANGE_ME"

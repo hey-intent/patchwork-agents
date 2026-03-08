@@ -1,0 +1,301 @@
+---
+# PatchworkAgent - Full VPS deployment
+# Usage:
+#   ansible-playbook -i inventory.ini playbook.yml \
+#     --extra-vars "github_app_id=123456 webhook_secret=$(openssl rand -hex 32) admin_token=$(openssl rand -hex 32)"
+#
+# For secrets, prefer ansible-vault or pass via --extra-vars at runtime.
+
+- name: Deploy PatchworkAgent on VPS
+  hosts: vps
+  become: true
+
+  vars_files:
+    - group_vars/vps.yml
+
+  tasks:
+    - name: Install system packages
+      ansible.builtin.apt:
+        name:
+          - git
+          - curl
+          - jq
+        state: present
+        update_cache: true
+    - name: Add Docker GPG key
+      shell: |
+        install -m 0755 -d /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+        chmod a+r /etc/apt/keyrings/docker.asc
+      args:
+        creates: /etc/apt/keyrings/docker.asc
+
+    - name: Add Docker repository
+      shell: |
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list
+      args:
+        creates: /etc/apt/sources.list.d/docker.list
+
+    - name: Install Docker CE
+      apt:
+        name: [docker-ce, docker-ce-cli, containerd.io, docker-buildx-plugin]
+        state: present
+        update_cache: true
+      notify: Restart docker
+
+    - name: Enable and start Docker
+      ansible.builtin.systemd_service:
+        name: docker
+        enabled: true
+        state: started
+
+    - name: Check if k3s is installed
+      ansible.builtin.stat:
+        path: /usr/local/bin/k3s
+      register: k3s_bin
+
+    - name: Download k3s install script
+      ansible.builtin.get_url:
+        url: https://get.k3s.io
+        dest: /tmp/get-k3s.sh
+        mode: "0755"
+      when: not k3s_bin.stat.exists
+
+    - name: Install k3s
+      ansible.builtin.command:
+        cmd: /tmp/get-k3s.sh
+      environment:
+        INSTALL_K3S_VERSION: "{{ k3s_version }}"
+      when: not k3s_bin.stat.exists
+      changed_when: true
+
+    - name: Wait for k3s to be ready
+      ansible.builtin.command:
+        cmd: k3s kubectl get nodes
+      register: k3s_ready
+      retries: 12
+      delay: 5
+      until: k3s_ready.rc == 0
+      changed_when: false
+
+    - name: Configure Traefik certResolver
+      ansible.builtin.copy:
+        dest: /var/lib/rancher/k3s/server/manifests/traefik-config.yaml
+        mode: "0644"
+        content: |
+          apiVersion: helm.cattle.io/v1
+          kind: HelmChartConfig
+          metadata:
+            name: traefik
+            namespace: kube-system
+          spec:
+            valuesContent: |-
+              additionalArguments:
+                - "--certificatesresolvers.le.acme.email={{ traefik_acme_email }}"
+                - "--certificatesresolvers.le.acme.storage=/data/acme.json"
+                - "--certificatesresolvers.le.acme.tlschallenge=true"
+
+    - name: Clone project repo
+      ansible.builtin.git:
+        repo: "{{ repo_url }}"
+        dest: "{{ project_dir }}"
+        version: "{{ repo_branch }}"
+        force: true
+
+    - name: Build orchestrator image
+      ansible.builtin.command:
+        cmd: >
+          docker build -f {{ project_dir }}/images/orchestrator/Dockerfile -t {{ orchestrator_image }} {{ project_dir }}
+
+
+      changed_when: true
+
+    - name: Import orchestrator image into k3s
+      ansible.builtin.shell: |
+        set -o pipefail
+        docker save {{ orchestrator_image }} | k3s ctr images import -
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Build worker images
+      ansible.builtin.command:
+        cmd: >
+          docker build -f {{ project_dir }}/{{ item.dockerfile }} -t {{ item.name }}:latest {{ project_dir }}
+
+
+      loop: "{{ worker_images }}"
+      changed_when: true
+
+    - name: Import worker images into k3s
+      ansible.builtin.shell: |
+        set -o pipefail
+        docker save {{ item.name }}:latest | k3s ctr images import -
+      args:
+        executable: /bin/bash
+      loop: "{{ worker_images }}"
+      changed_when: true
+
+    - name: Apply namespace and RBAC
+      ansible.builtin.command:
+        cmd: "k3s kubectl apply -f {{ project_dir }}/k8s/namespace-rbac.yaml"
+      register: apply_namespace_rbac
+      changed_when: "'created' in apply_namespace_rbac.stdout or 'configured' in apply_namespace_rbac.stdout"
+
+    - name: Apply network policies
+      ansible.builtin.command:
+        cmd: "k3s kubectl apply -f {{ project_dir }}/k8s/networkpolicy.yaml"
+      register: apply_network_policies
+      changed_when: "'created' in apply_network_policies.stdout or 'configured' in apply_network_policies.stdout"
+
+    - name: Copy GitHub App private key to remote
+      ansible.builtin.copy:
+        src: "{{ github_private_key_local_path }}"
+        dest: /tmp/github-app.pem
+        mode: "0600"
+
+    - name: Apply github-app secret
+      ansible.builtin.shell: |
+        k3s kubectl -n {{ namespace }} delete secret github-app --ignore-not-found
+        k3s kubectl -n {{ namespace }} create secret generic github-app \
+          --from-literal=GITHUB_APP_ID={{ github_app_id }} \
+          --from-file=GITHUB_PRIVATE_KEY=/tmp/github-app.pem
+      no_log: true
+
+    - name: Remove temporary key file
+      ansible.builtin.file:
+        path: /tmp/github-app.pem
+        state: absent
+
+    - name: Apply github-webhook-secret
+      ansible.builtin.command:
+        cmd: k3s kubectl apply -f -
+        stdin: |
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: github-webhook-secret
+            namespace: {{ namespace }}
+          type: Opaque
+          stringData:
+            WEBHOOK_SECRET: "{{ webhook_secret }}"
+      register: apply_secret_webhook
+      changed_when: "'created' in apply_secret_webhook.stdout or 'configured' in apply_secret_webhook.stdout"
+      # no_log: true
+
+    - name: Apply orchestrator-config secret
+      ansible.builtin.command:
+        cmd: k3s kubectl apply -f -
+        stdin: |
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: orchestrator-config
+            namespace: {{ namespace }}
+          type: Opaque
+          stringData:
+            JOB_TTL_SECONDS: "3600"
+            ADMIN_TOKEN: "{{ admin_token }}"
+      register: apply_secret_orchestrator_cfg
+      changed_when: "'created' in apply_secret_orchestrator_cfg.stdout or 'configured' in apply_secret_orchestrator_cfg.stdout"
+      # no_log: true
+
+    - name: Apply anthropic-api-key secret
+      ansible.builtin.command:
+        cmd: k3s kubectl apply -f -
+        stdin: |
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: anthropic-api-key
+            namespace: {{ namespace }}
+          type: Opaque
+          stringData:
+            ANTHROPIC_API_KEY: "{{ anthropic_api_key }}"
+      register: apply_secret_anthropic
+      changed_when: "'created' in apply_secret_anthropic.stdout or 'configured' in apply_secret_anthropic.stdout"
+      when: anthropic_api_key | length > 0
+      # no_log: true
+
+    - name: Apply openai-api-key secret
+      ansible.builtin.command:
+        cmd: k3s kubectl apply -f -
+        stdin: |
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: openai-api-key
+            namespace: {{ namespace }}
+          type: Opaque
+          stringData:
+            OPENAI_API_KEY: "{{ openai_api_key }}"
+      register: apply_secret_openai
+      changed_when: "'created' in apply_secret_openai.stdout or 'configured' in apply_secret_openai.stdout"
+      when: openai_api_key | length > 0
+      # no_log: true
+
+    - name: Apply openrouter-api-key secret
+      ansible.builtin.command:
+        cmd: k3s kubectl apply -f -
+        stdin: |
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: openrouter-api-key
+            namespace: {{ namespace }}
+          type: Opaque
+          stringData:
+            OPENROUTER_API_KEY: "{{ openrouter_api_key }}"
+      register: apply_secret_openrouter
+      changed_when: "'created' in apply_secret_openrouter.stdout or 'configured' in apply_secret_openrouter.stdout"
+      when: openrouter_api_key | length > 0
+      # no_log: true
+
+    - name: Copy orchestrator manifest to temporary file
+      ansible.builtin.copy:
+        remote_src: true
+        src: "{{ project_dir }}/k8s/orchestrator.yaml"
+        dest: /tmp/orchestrator-rendered.yaml
+        mode: "0644"
+
+    - name: Patch ingress host in temporary manifest
+      ansible.builtin.replace:
+        path: /tmp/orchestrator-rendered.yaml
+        regexp: "bot\\.yourdomain\\.com"
+        replace: "{{ ingress_host }}"
+
+    - name: Apply orchestrator (Deployment + Service + Ingress)
+      ansible.builtin.command:
+        cmd: "k3s kubectl apply -f /tmp/orchestrator-rendered.yaml"
+      register: apply_orchestrator
+      changed_when: "'created' in apply_orchestrator.stdout or 'configured' in apply_orchestrator.stdout"
+
+    - name: Wait for orchestrator rollout
+      ansible.builtin.command:
+        cmd: "k3s kubectl -n {{ namespace }} rollout status deployment/orchestrator --timeout=120s"
+      changed_when: false
+
+    - name: Check orchestrator health endpoint (best effort)
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:8080/healthz"
+        method: GET
+      register: health
+      retries: 6
+      delay: 5
+      until: health.status == 200
+      ignore_errors: true
+
+    - name: Show deployment status
+      ansible.builtin.command:
+        cmd: "k3s kubectl -n {{ namespace }} get pods,svc,ingress"
+      register: status
+      changed_when: false
+
+    - name: Print status
+      ansible.builtin.debug:
+        var: status.stdout_lines
+  handlers:
+    - name: Restart docker
+      ansible.builtin.systemd_service:
+        name: docker
+        state: restarted

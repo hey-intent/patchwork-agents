@@ -1,0 +1,111 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orchestrator
+  namespace: ai-bot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: orchestrator
+  template:
+    metadata:
+      labels:
+        app: orchestrator
+    spec:
+      serviceAccountName: orchestrator
+      containers:
+        - name: orchestrator
+          image: ghcr.io/hey-intent/orchestrator:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+          env:
+            - name: NAMESPACE
+              value: ai-bot
+            - name: JOB_TTL_SECONDS
+              valueFrom:
+                secretKeyRef:
+                  name: orchestrator-config
+                  key: JOB_TTL_SECONDS
+            - name: TRIGGER_PREFIX
+              value: "ai-pr-"
+            - name: ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: orchestrator-config
+                  key: ADMIN_TOKEN
+            - name: WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: github-webhook-secret
+                  key: WEBHOOK_SECRET
+            - name: GITHUB_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: github-app
+                  key: GITHUB_APP_ID
+            - name: GITHUB_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: github-app
+                  key: GITHUB_PRIVATE_KEY
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orchestrator
+  namespace: ai-bot
+spec:
+  type: ClusterIP
+  selector:
+    app: orchestrator
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: orchestrator
+  namespace: ai-bot
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls.certresolver: le
+spec:
+  ingressClassName: traefik
+  # Replace bot.yourdomain.com with your domain (Ansible does this automatically)
+  tls:
+    - hosts:
+        - bot.yourdomain.com
+  rules:
+    - host: bot.yourdomain.com
+      http:
+        paths:
+          - path: /webhook/github
+            pathType: Prefix
+            backend:
+              service:
+                name: orchestrator
+                port:
+                  number: 80
