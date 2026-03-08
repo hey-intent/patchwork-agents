@@ -24,6 +24,8 @@ Tested on: VPS / 8 GB RAM / 4 vCPU / k3s single-node.
 
 ## Architecture
 
+![PatchworkAgent Architecture](illustration.png)
+
 ```
 GitHub Issue (label ai-pr-*)
        |

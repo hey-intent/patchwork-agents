@@ -7,7 +7,7 @@ workspace "PatchworkAgent" "Kubernetes-native system that automatically solves G
         # --- External Systems ---
         github = softwareSystem "GitHub" "Source code hosting, issue tracking, PR management, webhook delivery" "External"
         anthropicApi = softwareSystem "Anthropic API" "Claude LLM provider" "External"
-        openaiApi = softwareSystem "OpenAI API" "GPT-4 / Codex LLM provider" "External"
+        openaiApi = softwareSystem "OpenAI API" "Codex LLM provider" "External"
         openrouterApi = softwareSystem "OpenRouter API" "Multi-model gateway" "External"
 
         # --- Main System ---
@@ -20,7 +20,7 @@ workspace "PatchworkAgent" "Kubernetes-native system that automatically solves G
             workerAider = container "Aider Worker" "Ephemeral K8s Job that clones a repo, invokes Aider CLI (OpenRouter) to fix the issue, pushes a branch, and creates a PR" "Python 3.12 / Bash / Aider CLI" "Worker"
 
             k8sApi = container "Kubernetes API" "k3s API Server - manages Jobs, Secrets, RBAC, NetworkPolicies in the ai-bot namespace" "k3s" "Infrastructure"
-            secrets = container "K8s Secrets" "Stores GitHub App PEM, webhook secret, API keys (Anthropic, OpenAI, OpenRouter), admin token" "Kubernetes Secrets" "Datastore"
+            secrets = container "K8s Secrets" "Stores GitHub App PEM, webhook secret, API keys (Anthropic, OpenAI, OpenRouter), admin token, and ephemeral per-job GITHUB_TOKEN secrets (ownerReference to Job, auto-cleaned)" "Kubernetes Secrets" "Datastore"
 
             gitWorkflow = container "Git Workflow Library" "Shared Bash library (git_workflow.sh) used by all workers for clone, branch, push, and PR creation" "Bash" "Library"
         }
