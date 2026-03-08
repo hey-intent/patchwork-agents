@@ -260,7 +260,7 @@ spec:
             '401':
               description: Token invalide
       /secrets/github-app:
-        get:
+        post:
           summary: Verifier la config GitHub App (admin)
           security:
             - bearerAuth: []

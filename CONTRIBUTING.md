@@ -19,7 +19,8 @@ Merci de contribuer a PatchworkAgent ! Ce guide explique comment ajouter un nouv
 ```
 .
 ├── app/
-│   └── app.py                  # Orchestrateur FastAPI
+│   ├── app.py                  # Orchestrateur FastAPI
+│   └── requirements.txt
 ├── providers/
 │   ├── git_workflow.sh          # Logique Git partagee (clone, branch, push, PR)
 │   ├── claude_code.sh           # Provider Claude Code
@@ -32,11 +33,26 @@ Merci de contribuer a PatchworkAgent ! Ce guide explique comment ajouter un nouv
 │   └── worker-aider/            # Image + run.sh worker Aider
 ├── k8s/
 │   ├── namespace-rbac.yaml      # Namespace + RBAC
+│   ├── networkpolicy.yaml       # Politiques reseau
 │   ├── orchestrator.yaml        # Deployment + Service + Ingress
-│   ├── debug-claude.yaml        # Job de debug Claude
-│   ├── debug-codex.yaml         # Job de debug Codex
-│   └── debug-aider.yaml         # Job de debug Aider
-└── README.md
+│   ├── ai-issue-*.yaml          # Jobs manuels par provider
+│   ├── debug-*.yaml             # Jobs de debug par provider
+│   └── secrets/                 # Templates de secrets (pas de valeurs)
+├── ansible/
+│   ├── playbook.yml             # Deploiement VPS complet
+│   ├── inventory.ini            # Inventaire par defaut
+│   ├── inventory-local.ini      # Inventaire local
+│   ├── inventory-prod.ini       # Inventaire production (gitignored)
+│   ├── requirements.yml         # Collections Ansible
+│   └── group_vars/vps.yml
+├── docs/
+│   ├── catalog-info.yaml        # Backstage service catalog
+│   └── workspace.dsl            # Architecture C4 (Structurizr)
+├── .github/
+│   └── workflows/secret-scan.yml
+├── CONTRIBUTING.md
+├── SECURITY.md
+└── LICENSE (MIT)
 ```
 
 ---

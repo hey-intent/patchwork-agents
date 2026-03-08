@@ -79,10 +79,12 @@ ansible-playbook -i inventory.ini playbook.yml \
   --extra-vars "ingress_host=code-agent.yourdomain.com" \
   --extra-vars "traefik_acme_email=you@yourdomain.com" \
   --extra-vars "github_app_id=123456" \
-  --extra-vars "webhook_secret=$(openssl rand -hex 20)" \
+  --extra-vars "webhook_secret=$(openssl rand -hex 32)" \
   --extra-vars "admin_token=$(openssl rand -hex 32)" \
   --extra-vars "anthropic_api_key=sk-ant-xxxxx" \
-  --extra-vars "github_private_key_path=/path/to/app.pem"
+  --extra-vars "github_private_key_local_path=/path/to/app.pem"
+  # Optional: --extra-vars "openai_api_key=sk-xxxxx"
+  # Optional: --extra-vars "openrouter_api_key=sk-or-xxxxx"
 ```
 
 > Secrets passed via `--extra-vars` are not committed. See `ansible/group_vars/vps.yml` for the full list of variables.
@@ -250,7 +252,7 @@ curl -s -X POST http://127.0.0.1:8080/jobs/run -H "Authorization: Bearer <ADMIN_
 | **Incoming webhook** | Fake webhook to trigger a job | HMAC-SHA256 signature (`WEBHOOK_SECRET`) verified on every request |
 | **Admin endpoints** | Unauthorized access | Bearer token (`ADMIN_TOKEN`), not exposed via Ingress |
 | **GitHub App private key** | Theft = full access | PEM in orchestrator pod only, workers receive an ephemeral token (1h) |
-| **GitHub token (workers)** | Compromised worker | Token scoped to one installation, expires in 1h, ephemeral container |
+| **GitHub token (workers)** | Compromised worker | Token stored in ephemeral K8s Secret (ownerReference to Job), scoped to one installation, expires in 1h, ephemeral container |
 | **AI API keys** | Leak | Injected via K8s `secretKeyRef`, one secret per provider |
 | **AI code execution** | Malicious code | Workers run as non-root, ephemeral, no persistent volume |
 | **Git credentials** | Token in logs | Auth via `GIT_ASKPASS`, no token in URLs |
@@ -311,7 +313,15 @@ sudo systemctl status k3s --no-pager -l
 |-- ansible/
 |   |-- playbook.yml            # Full VPS deployment
 |   |-- inventory.ini
+|   |-- inventory-local.ini
+|   |-- inventory-prod.ini      # gitignored
+|   |-- requirements.yml        # Ansible collections
 |   `-- group_vars/vps.yml
+|-- docs/
+|   |-- catalog-info.yaml       # Backstage service catalog
+|   `-- workspace.dsl           # C4 architecture (Structurizr)
+|-- .github/
+|   `-- workflows/secret-scan.yml  # CI secret scanning
 |-- CONTRIBUTING.md
 |-- SECURITY.md
 `-- LICENSE (MIT)
