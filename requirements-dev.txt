@@ -1,0 +1,2 @@
+# Dev deps for the whole repo (run from root: pip install -r requirements-dev.txt)
+-r app/requirements-dev.txt

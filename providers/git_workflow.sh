@@ -3,11 +3,15 @@
 # Exports: WORKDIR, BRANCH, BASE_SHA
 # Provides: git_clone_and_branch, git_push_and_pr
 # Source this file from provider scripts.
+#
+# Expects SOURCE_REPO and SOURCE_ISSUE_NUMBER (orchestrator / SourceProvider).
+# GITHUB_TOKEN: clone + API token from ephemeral Job Secret (GitHub App today).
 
 set -euo pipefail
 
-REPO="${GITHUB_REPO:?}"
-ISSUE_NUMBER="${GITHUB_ISSUE_NUMBER:?}"
+# Set by orchestrator from SourceProvider (not GitHub-specific naming).
+REPO="${SOURCE_REPO:?}"
+ISSUE_NUMBER="${SOURCE_ISSUE_NUMBER:?}"
 
 # Use GIT_ASKPASS to avoid leaking token in process list / git error logs
 _setup_git_askpass() {

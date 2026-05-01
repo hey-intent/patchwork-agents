@@ -25,8 +25,9 @@ RUN git config --global user.name "patchwork-agent" \
 WORKDIR /app
 COPY --chown=worker:worker images/worker-codex/run.sh /app/run.sh
 COPY --chown=worker:worker providers/ /app/providers/
-RUN sed -i 's/\r$//' /app/run.sh /app/providers/*.sh \
- && chmod +x /app/run.sh /app/providers/*.sh
+COPY --chown=worker:worker prompt/ /app/prompt/
+RUN sed -i 's/\r$//' /app/run.sh /app/providers/*.sh /app/prompt/*.sh \
+ && chmod +x /app/run.sh /app/providers/*.sh /app/prompt/*.sh
 
 WORKDIR /work
 

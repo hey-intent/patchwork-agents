@@ -48,7 +48,6 @@ For GitHub, this means:
 ## Non-Goals
 
 - No GitLab, Gitea, Forgejo, or Linear implementation in this change.
-- No worker environment variable migration yet.
 - No label state machine changes.
 - No change to the existing `ai-pr-*` trigger behavior.
 - No replacement of Kubernetes job orchestration.
@@ -70,8 +69,13 @@ Tradeoffs:
 - Some source platforms cannot always provide short-lived repo-scoped clone
   credentials. Their implementations must document the best available security
   model.
-- The workers still receive GitHub-shaped environment variables in this PR.
-  Generic `SOURCE_*` variables should be handled in a later migration.
+
+Worker jobs receive **source-agnostic metadata** as `SOURCE_*` environment
+variables (for example `SOURCE_REPO`, `SOURCE_ISSUE_NUMBER`, `SOURCE_ISSUE_BODY`,
+`SOURCE_ISSUE_URL`, `SOURCE_INSTALLATION_ID`, `SOURCE_EVENT_ACTION`) populated
+from the active `SourceProvider`. The HTTPS clone credential still uses the
+secret key **`GITHUB_TOKEN`** today (GitHub App installation token). Renaming
+that credential for non-GitHub hosts is a separate change.
 
 ## Validation
 

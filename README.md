@@ -58,6 +58,13 @@ GitHub Issue (label ai-pr-*)
 (1h) via GitHub App JWT and returns git clone credentials to the orchestrator.
 Workers receive only the short-lived token and never receive the PEM key.
 
+**Job environment (metadata)** : the orchestrator injects source-agnostic
+variables for each worker Job: `SOURCE_REPO`, `SOURCE_ISSUE_NUMBER`,
+`SOURCE_ISSUE_TITLE`, `SOURCE_ISSUE_BODY` (GitHub issue description, bounded to
+64 KiB), `SOURCE_ISSUE_URL`, `SOURCE_EVENT_ACTION`, `SOURCE_INSTALLATION_ID`.
+See `docs/adr/0001-source-provider-abstraction.md`. The clone credential secret
+key remains `GITHUB_TOKEN` (installation token).
+
 ---
 
 ## Quickstart
@@ -230,6 +237,10 @@ kubectl -n ai-bot delete job debug-<provider> --ignore-not-found && kubectl -n a
 
 ### Manual Jobs (ai-issue)
 
+> Manual jobs in `k8s/ai-issue-*.yaml` must set `SOURCE_REPO`,
+> `SOURCE_ISSUE_NUMBER`, and `SOURCE_INSTALLATION_ID` (not the old `GITHUB_*`
+> names).
+
 ```shell
 # Run / logs / rerun (replace <provider>)
 kubectl -n ai-bot apply -f k8s/ai-issue-<provider>.yaml
@@ -264,7 +275,7 @@ curl -s -X POST http://127.0.0.1:8080/jobs/run -H "Authorization: Bearer <ADMIN_
 | **Source-provider private key** | Theft = source repo access | Secret stays in orchestrator pod only; workers receive short-lived clone credentials |
 | **GitHub token (workers)** | Compromised worker | Token stored in ephemeral K8s Secret (ownerReference to Job), scoped to one installation, expires in 1h, ephemeral container |
 | **AI API keys** | Leak | Injected via K8s `secretKeyRef`, one secret per AI worker provider |
-| **AI code execution** | Malicious code | Workers run as non-root, ephemeral, no persistent volume |
+| **AI / LLM input** | Issue title & body influence model behavior | Content is user-controlled; bounded length in Job env; treat as untrusted input (prompt injection). See `SECURITY.md` |
 | **Git credentials** | Token in logs | Auth via `GIT_ASKPASS`, no token in URLs |
 | **K8s RBAC** | Out-of-scope access | Role limited to `ai-bot` namespace, workers without ServiceAccount |
 
@@ -288,6 +299,7 @@ curl -s -X POST http://127.0.0.1:8080/jobs/run -H "Authorization: Bearer <ADMIN_
 | `CrashLoopBackOff` | `kubectl logs pod/<pod> --previous` |
 | `Not logged in` | Missing API secret (depends on provider) |
 | `Pods Pending` | `kubectl describe pod <pod>` |
+| `Job missing SOURCE_REPO` / clone fails | Orchestrator + worker images out of sync; manual YAML still using `GITHUB_REPO` / `GITHUB_ISSUE_*` — use `SOURCE_*` envs |
 | Job 409 conflict | Job already exists, `kubectl delete job <name>` |
 
 ```shell
@@ -318,6 +330,9 @@ sudo systemctl status k3s --no-pager -l
 |   |-- ai-issue-*.yaml         # Manual jobs per provider
 |   |-- debug-*.yaml            # Debug jobs per provider
 |   `-- secrets/                # Templates (no values)
+|-- prompt/
+|   |-- issue_prompt.sh       # Optional SOURCE_ISSUE_BODY appendix
+|   `-- issue_start_prompt.sh  # Shared task instructions (all workers)
 |-- providers/
 |   |-- source/                 # SourceProvider interface + GitHub implementation
 |   |-- git_workflow.sh         # Shared Git logic

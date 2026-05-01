@@ -79,7 +79,7 @@ source "$SCRIPT_DIR/git_workflow.sh"
 git_clone_and_branch
 
 # 3. Appeler le CLI IA
-myprovider-cli run "Fix issue #${ISSUE_NUMBER}: ${GITHUB_ISSUE_TITLE:-no title}. ..."
+myprovider-cli run "Fix issue #${ISSUE_NUMBER}: ${SOURCE_ISSUE_TITLE:-no title}. ..."
 
 # 4. Push & PR (logique partagee)
 git_push_and_pr "Automated PR created by MyProvider for issue #${ISSUE_NUMBER}."
@@ -96,12 +96,12 @@ set -euo pipefail
 echo "=== worker start ==="
 echo "TIME: $(date -u --iso-8601=seconds)"
 echo "AI_PROVIDER=${AI_PROVIDER:-myprovider}"
-echo "GITHUB_REPO=${GITHUB_REPO:-}"
-echo "GITHUB_ISSUE_NUMBER=${GITHUB_ISSUE_NUMBER:-}"
-echo "GITHUB_INSTALLATION_ID=${GITHUB_INSTALLATION_ID:-}"
+echo "SOURCE_REPO=${SOURCE_REPO:-}"
+echo "SOURCE_ISSUE_NUMBER=${SOURCE_ISSUE_NUMBER:-}"
+echo "SOURCE_INSTALLATION_ID=${SOURCE_INSTALLATION_ID:-}"
 if [[ "${DEBUG_ENV:-0}" == "1" ]]; then
   echo "---- env (whitelist) ----"
-  printenv | grep -E '^(AI_PROVIDER|GITHUB_REPO|GITHUB_ISSUE_NUMBER|GITHUB_INSTALLATION_ID|NAMESPACE|JOB_IMAGE|HOME|PATH)=' || true
+  printenv | grep -E '^(AI_PROVIDER|SOURCE_REPO|SOURCE_ISSUE_NUMBER|SOURCE_INSTALLATION_ID|NAMESPACE|JOB_IMAGE|HOME|PATH)=' || true
   echo "---- end env ----"
 fi
 
@@ -133,8 +133,9 @@ RUN curl -fsSL https://example.com/install.sh | bash
 WORKDIR /app
 COPY --chown=worker:worker images/worker-myprovider/run.sh /app/run.sh
 COPY --chown=worker:worker providers/ /app/providers/
-RUN sed -i 's/\r$//' /app/run.sh /app/providers/*.sh \
- && chmod +x /app/run.sh /app/providers/*.sh
+COPY --chown=worker:worker prompt/ /app/prompt/
+RUN sed -i 's/\r$//' /app/run.sh /app/providers/*.sh /app/prompt/*.sh \
+ && chmod +x /app/run.sh /app/providers/*.sh /app/prompt/*.sh
 
 ENV PATH="/home/worker/.local/bin:${PATH}"
 WORKDIR /work
