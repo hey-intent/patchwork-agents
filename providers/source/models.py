@@ -42,6 +42,15 @@ class PullRequest(BaseModel):
     issue_id: str | None = None
 
 
+ActionName = Literal["spec", "plan", "implement", "review", "continue"]
+
+
+class ActionTrigger(BaseModel):
+    action: ActionName
+    source: Literal["comment"]
+    raw_command: str
+
+
 WebhookEventType = Literal[
     "issue_opened",
     "issue_labeled",
@@ -57,6 +66,7 @@ class WebhookEvent(BaseModel):
     type: WebhookEventType
     actor: str
     repo: str
+    source_installation_id: str | None = None
     issue: Issue | None = None
     pr: PullRequest | None = None
     comment: Comment | None = None

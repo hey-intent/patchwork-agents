@@ -12,7 +12,7 @@ import httpx
 import jwt
 
 from .base import SourceProvider, SourceProviderAPIError, SourceProviderConfigurationError
-from .models import Comment, Issue, PullRequest, WebhookEvent
+from .models import ActionTrigger, Comment, Issue, PullRequest, WebhookEvent
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -21,6 +21,9 @@ GITHUB_SIGNATURE_HEX_LENGTH = 64
 JWT_LEEWAY_SECONDS = 60
 JWT_TTL_SECONDS = 600
 DEFAULT_INSTALLATION_TOKEN_TTL_SECONDS = 3300
+AGENT_ACTIONS = {"spec", "plan", "implement", "review", "continue"}
+ACTION_TRIGGER_COMMAND_MAX_CHARS = 64
+ACTION_TRIGGER_ALLOWED_PERMISSIONS = {"write", "maintain", "admin"}
 
 
 class GitHubProvider(SourceProvider):
@@ -72,9 +75,11 @@ class GitHubProvider(SourceProvider):
             return None
 
         repo = (payload.get("repository") or {}).get("full_name")
+        source_installation_id = None
         if repo:
             installation_id = (payload.get("installation") or {}).get("id")
             if installation_id:
+                source_installation_id = str(installation_id)
                 self._installation_ids_by_repo[repo] = str(installation_id)
 
         sender = payload.get("sender") or {}
@@ -86,13 +91,21 @@ class GitHubProvider(SourceProvider):
             if not issue:
                 return None
             if action == "opened":
-                return WebhookEvent(type="issue_opened", actor=actor, repo=issue.repo, issue=issue, raw=payload)
+                return WebhookEvent(
+                    type="issue_opened",
+                    actor=actor,
+                    repo=issue.repo,
+                    source_installation_id=source_installation_id,
+                    issue=issue,
+                    raw=payload,
+                )
             if action == "labeled":
                 label = _label_name(payload.get("label"))
                 return WebhookEvent(
                     type="issue_labeled",
                     actor=actor,
                     repo=issue.repo,
+                    source_installation_id=source_installation_id,
                     issue=issue,
                     label=label,
                     raw=payload,
@@ -103,6 +116,7 @@ class GitHubProvider(SourceProvider):
                     type="issue_unlabeled",
                     actor=actor,
                     repo=issue.repo,
+                    source_installation_id=source_installation_id,
                     issue=issue,
                     label=label,
                     raw=payload,
@@ -118,6 +132,7 @@ class GitHubProvider(SourceProvider):
                 type="issue_commented",
                 actor=actor,
                 repo=issue.repo,
+                source_installation_id=source_installation_id,
                 issue=issue,
                 comment=comment,
                 raw=payload,
@@ -128,13 +143,64 @@ class GitHubProvider(SourceProvider):
             if not pr:
                 return None
             if action == "opened":
-                return WebhookEvent(type="pr_opened", actor=actor, repo=pr.repo, pr=pr, raw=payload)
+                return WebhookEvent(
+                    type="pr_opened",
+                    actor=actor,
+                    repo=pr.repo,
+                    source_installation_id=source_installation_id,
+                    pr=pr,
+                    raw=payload,
+                )
             if action == "closed":
                 event_type = "pr_merged" if (payload.get("pull_request") or {}).get("merged") else "pr_closed"
-                return WebhookEvent(type=event_type, actor=actor, repo=pr.repo, pr=pr, raw=payload)
+                return WebhookEvent(
+                    type=event_type,
+                    actor=actor,
+                    repo=pr.repo,
+                    source_installation_id=source_installation_id,
+                    pr=pr,
+                    raw=payload,
+                )
             return None
 
         return None
+
+    def get_action_trigger(self, event: WebhookEvent) -> ActionTrigger | None:
+        if event.type != "issue_commented" or not event.comment:
+            return None
+
+        for raw_line in event.comment.body.splitlines():
+            line = raw_line.strip()
+            if not line.startswith("/agent"):
+                continue
+            parts = line.split()
+            if len(parts) < 2 or parts[0] != "/agent":
+                continue
+            action = parts[1].lower()
+            if action not in AGENT_ACTIONS:
+                continue
+            raw_command = f"/agent {action}"[:ACTION_TRIGGER_COMMAND_MAX_CHARS]
+            return ActionTrigger(action=action, source="comment", raw_command=raw_command)
+
+        return None
+
+    async def can_trigger_action(self, event: WebhookEvent, trigger: ActionTrigger) -> bool:
+        if not event.actor:
+            return False
+
+        token = await self._installation_token_for_repo(event.repo)
+        response = await self._request(
+            "GET",
+            f"/repos/{event.repo}/collaborators/{quote(event.actor, safe='')}/permission",
+            headers=self._github_headers(f"Bearer {token}"),
+        )
+        if response.status_code == 404:
+            return False
+        if response.status_code >= 400:
+            raise SourceProviderAPIError(f"GitHub collaborator permission lookup failed ({response.status_code})")
+
+        permission = response.json().get("permission")
+        return permission in ACTION_TRIGGER_ALLOWED_PERMISSIONS
 
     async def get_issue(self, repo: str, issue_id: str) -> Issue:
         data = await self._request_json("GET", f"/repos/{repo}/issues/{issue_id}", repo=repo)

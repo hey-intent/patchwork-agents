@@ -102,6 +102,103 @@ async def test_parse_event_issue_unlabeled():
 
 
 @pytest.mark.asyncio
+async def test_parse_event_issue_commented():
+    body = load_fixture("issue_comment.json")
+    event = await provider().parse_event({"X-GitHub-Event": "issue_comment"}, body)
+
+    assert event is not None
+    assert event.type == "issue_commented"
+    assert event.actor == "bob"
+    assert event.repo == REPO
+    assert event.source_installation_id == "42"
+    assert event.issue is not None
+    assert event.issue.number == 7
+    assert event.comment is not None
+    assert event.comment.body == "/agent implement"
+
+
+@pytest.mark.asyncio
+async def test_get_action_trigger_extracts_agent_implement():
+    body = load_fixture("issue_comment.json")
+    gh = provider()
+    event = await gh.parse_event({"X-GitHub-Event": "issue_comment"}, body)
+
+    trigger = gh.get_action_trigger(event)
+
+    assert trigger is not None
+    assert trigger.action == "implement"
+    assert trigger.source == "comment"
+    assert trigger.raw_command == "/agent implement"
+
+
+@pytest.mark.asyncio
+async def test_get_action_trigger_ignores_normal_comment():
+    body = load_fixture("issue_comment.json").replace(b"/agent implement", b"normal comment")
+    gh = provider()
+    event = await gh.parse_event({"X-GitHub-Event": "issue_comment"}, body)
+
+    assert gh.get_action_trigger(event) is None
+
+
+@pytest.mark.asyncio
+async def test_get_action_trigger_ignores_unknown_action():
+    body = load_fixture("issue_comment.json").replace(b"/agent implement", b"/agent foo")
+    gh = provider()
+    event = await gh.parse_event({"X-GitHub-Event": "issue_comment"}, body)
+
+    assert gh.get_action_trigger(event) is None
+
+
+@pytest.mark.asyncio
+async def test_get_action_trigger_continues_after_invalid_agent_line():
+    body = load_fixture("issue_comment.json").replace(b"/agent implement", b"/agent foo\\n/agent implement")
+    gh = provider()
+    event = await gh.parse_event({"X-GitHub-Event": "issue_comment"}, body)
+
+    trigger = gh.get_action_trigger(event)
+
+    assert trigger is not None
+    assert trigger.action == "implement"
+    assert trigger.raw_command == "/agent implement"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_can_trigger_action_allows_write_permission(monkeypatch):
+    gh = provider()
+    gh._installation_ids_by_repo[REPO] = "42"
+    monkeypatch.setattr(gh, "_build_app_jwt", lambda: "jwt")
+    respx.post("https://api.github.com/app/installations/42/access_tokens").mock(
+        return_value=Response(201, json={"token": "installation-token"})
+    )
+    respx.get(f"https://api.github.com/repos/{REPO}/collaborators/bob/permission").mock(
+        return_value=Response(200, json={"permission": "write"})
+    )
+    event = await gh.parse_event({"X-GitHub-Event": "issue_comment"}, load_fixture("issue_comment.json"))
+    trigger = gh.get_action_trigger(event)
+
+    assert await gh.can_trigger_action(event, trigger) is True
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_can_trigger_action_rejects_read_permission(monkeypatch):
+    gh = provider()
+    gh._installation_ids_by_repo[REPO] = "42"
+    monkeypatch.setattr(gh, "_build_app_jwt", lambda: "jwt")
+    respx.post("https://api.github.com/app/installations/42/access_tokens").mock(
+        return_value=Response(201, json={"token": "installation-token"})
+    )
+    respx.get(f"https://api.github.com/repos/{REPO}/collaborators/bob/permission").mock(
+        return_value=Response(200, json={"permission": "read"})
+    )
+    event = await gh.parse_event({"X-GitHub-Event": "issue_comment"}, load_fixture("issue_comment.json"))
+    trigger = gh.get_action_trigger(event)
+
+    assert await gh.can_trigger_action(event, trigger) is False
+
+
+@pytest.mark.asyncio
 async def test_parse_event_pr_opened():
     body = load_fixture("pr_opened.json")
     event = await provider().parse_event({"X-GitHub-Event": "pull_request"}, body)

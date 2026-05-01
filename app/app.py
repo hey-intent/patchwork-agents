@@ -13,7 +13,7 @@ import os
 import re
 import secrets
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -21,16 +21,9 @@ from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 from pydantic import BaseModel, Field
 
-from app.config import PROVIDER_CONFIG, ProviderConfig, settings
-from providers.source import (
-    SourceProviderAPIError,
-    SourceProviderConfigurationError,
-    SourceProviderError,
-    get_provider,
-)
-
-# Issue body in a pod env var must stay bounded (etcd / API limits, huge GitHub bodies).
-_MAX_ISSUE_BODY_CHARS = 65536
+from app.agent_orchestrator import AgentOrchestrator
+from app.config import ProviderConfig, settings
+from providers.source import get_provider
 
 # --- Logging setup ---
 # Use uvicorn's logger so messages aren't disabled by uvicorn's dictConfig
@@ -85,6 +78,19 @@ def get_source_provider():
         app_id=settings.github_app_id,
         private_key=settings.github_private_key,
         webhook_secret=settings.webhook_secret,
+    )
+
+
+def get_agent_orchestrator() -> AgentOrchestrator:
+    return AgentOrchestrator(
+        namespace=settings.namespace,
+        provider_label_prefix=settings.provider_label_prefix,
+        load_k8s_client=load_k8s_client,
+        build_worker_job=_build_worker_job,
+        create_or_replace_secret=_create_or_replace_secret,
+        delete_secret_if_exists=_delete_secret_if_exists,
+        attach_job_owner_to_secret=_attach_job_owner_to_secret,
+        safe_name=safe_name,
     )
 
 
@@ -261,7 +267,7 @@ def create_or_update_github_app_secret(payload: SecretPayload = Body(...), _auth
         "result": action,
         "secret": name,
         "namespace": settings.namespace,
-        "updated_at": datetime.now(UTC).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -270,158 +276,8 @@ async def github_webhook(request: Request):
     body = await request.body()
     headers = dict(request.headers)
     source_provider = get_source_provider()
-
-    if not await source_provider.verify_webhook(headers, body):
-        logger.warning("Invalid webhook signature")
-        raise HTTPException(status_code=401, detail="invalid webhook signature")
-
-    event = request.headers.get("X-GitHub-Event", "")
-    if event != "issues":
-        logger.info("Ignored event=%s", event)
-        return {"ok": True, "ignored": True, "reason": f"event={event}"}
-
-    source_event = await source_provider.parse_event(headers, body)
-    if not source_event:
-        logger.info("Ignored unhandled GitHub event=%s", event)
-        return {"ok": True, "ignored": True, "reason": f"event={event}"}
-
-    payload = source_event.raw
-    action = payload.get("action")
-
-    logger.info(
-        "Webhook received: event=issues action=%s repo=%s",
-        action,
-        ((payload.get("repository") or {}).get("full_name")),
-    )
-
-    logger.debug("TRIGGER_PREFIX: %s", settings.trigger_prefix)
-    logger.debug("PAYLOAD LABEL: %s", payload.get("label"))
-
-    # Decide whether we trigger â€” match any label starting with TRIGGER_PREFIX
-    # e.g. "ai-pr-claude", "ai-pr-openai"
-    provider = None
-
-    if action == "opened":
-        provider = issue_find_provider(payload, settings.trigger_prefix)
-    elif action == "labeled":
-        label = payload.get("label") or {}
-        label_name = label.get("name") if isinstance(label, dict) else str(label)
-        provider = _extract_provider_from_label(label_name, settings.trigger_prefix)
-    # else: action not handled
-
-    if not provider:
-        reason = f"no label matching {settings.trigger_prefix}* for action={action}"
-        logger.info("Not triggering: %s", reason)
-        return {"ok": True, "ignored": True, "reason": reason}
-
-    # Validate provider before any logging or further use
-    cfg = PROVIDER_CONFIG.get(provider)
-    if not cfg:
-        raise HTTPException(status_code=400, detail=f"unknown provider: {provider[:20]}")
-
-    logger.info("Triggered with provider=%s", provider)
-
-    repo_full = (payload.get("repository") or {}).get("full_name")
-    issue = payload.get("issue") or {}
-    issue_number = issue.get("number")
-    issue_title = issue.get("title", "")[:200]
-    raw_issue_body = issue.get("body")
-    issue_body = (raw_issue_body if isinstance(raw_issue_body, str) else "")[:_MAX_ISSUE_BODY_CHARS]
-    issue_url = issue.get("html_url", "")
-    installation_id = (payload.get("installation") or {}).get("id")
-
-    if not repo_full or not issue_number:
-        logger.error("Missing repo_full or issue_number")
-        raise HTTPException(status_code=400, detail="missing repository.full_name or issue.number")
-
-    if not installation_id:
-        logger.error("Missing installation.id in webhook payload")
-        raise HTTPException(status_code=400, detail="missing installation.id (is the GitHub App installed?)")
-
-    job_name = safe_name(f"ai-pr-{repo_full.replace('/', '-')}-{issue_number}-{provider}")
-
-    batch, core = load_k8s_client()
-
-    try:
-        _, github_token = await source_provider.get_clone_credentials(repo_full)
-    except SourceProviderConfigurationError as ex:
-        logger.exception("Source provider configuration error: %s", ex)
-        raise HTTPException(status_code=500, detail="source provider is not configured") from ex
-    except SourceProviderAPIError as ex:
-        logger.exception("Source provider API error: %s", ex)
-        raise HTTPException(status_code=502, detail="source provider API request failed") from ex
-    except SourceProviderError as ex:
-        logger.exception("Source provider error: %s", ex)
-        raise HTTPException(status_code=500, detail="source provider error") from ex
-    token_secret_name = safe_name(f"{job_name}-gh-token")
-    _create_or_replace_secret(core, token_secret_name, {"GITHUB_TOKEN": github_token})
-
-    job = _build_worker_job(
-        job_name=job_name,
-        cfg=cfg,
-        provider=provider,
-        env_vars={
-            # Source-provider-agnostic metadata (see docs/adr/0001-source-provider-abstraction.md).
-            "SOURCE_REPO": repo_full,
-            "SOURCE_ISSUE_NUMBER": str(issue_number),
-            "SOURCE_EVENT_ACTION": str(action),
-            "SOURCE_ISSUE_TITLE": issue_title,
-            "SOURCE_ISSUE_BODY": issue_body,
-            "SOURCE_ISSUE_URL": issue_url,
-            "SOURCE_INSTALLATION_ID": str(installation_id),
-        },
-        github_token_secret_name=token_secret_name,
-    )
-
-    # --- Logging around create_namespaced_job ---
-    logger.info("Creating Job: name=%s namespace=%s image=%s", job_name, settings.namespace, cfg.image)
-    # logger.debug("Job body: %s", job)  # inutile en prod (peut contenir secrets)
-
-    try:
-        created_obj = batch.create_namespaced_job(namespace=settings.namespace, body=job)
-        created_name = getattr(created_obj.metadata, "name", None)
-        created_uid = getattr(created_obj.metadata, "uid", None)
-        logger.info("K8s Job created: name=%s uid=%s", created_name, created_uid)
-        if created_name and created_uid:
-            try:
-                _attach_job_owner_to_secret(core, token_secret_name, created_name, created_uid)
-            except Exception as ex:
-                logger.warning("Unable to attach ownerReference on secret %s: %s", token_secret_name, ex)
-        created = True
-    except ApiException as e:
-        # show useful details for debugging
-        logger.exception(
-            "ApiException creating job: status=%s reason=%s ",
-            getattr(e, "status", None),
-            getattr(e, "reason", None),
-        )
-        if getattr(e, "status", None) == 409:
-            _delete_secret_if_exists(core, token_secret_name)
-            logger.info("Job already exists (idempotent): %s", job_name)
-            created = False
-        else:
-            _delete_secret_if_exists(core, token_secret_name)
-            raise HTTPException(
-                status_code=500,
-                detail=f"k8s error creating job: {getattr(e, 'reason', None)}",
-            ) from e
-    except Exception as ex:
-        _delete_secret_if_exists(core, token_secret_name)
-        logger.exception("Unexpected error creating job: %s", ex)
-        raise HTTPException(status_code=500, detail="internal error") from ex
-
-    return {
-        "ok": True,
-        "triggered": True,
-        "created": created,
-        "job": job_name,
-        "namespace": settings.namespace,
-        "repo": repo_full,
-        "issue_number": issue_number,
-        "action": action,
-        "provider": provider,
-        "timestamp": datetime.now(UTC).isoformat(),
-    }
+    orchestrator = get_agent_orchestrator()
+    return await orchestrator.handle_webhook(source_provider, headers, body)
 
 
 @app.post("/jobs/run")
@@ -464,31 +320,10 @@ def run_job(_auth: bool = Depends(verify_admin_token)):
         )
         raise HTTPException(
             status_code=500,
-            detail=f"k8s error creating job: {getattr(e, 'reason', None)}",
+            detail="k8s error creating job",
         ) from e
 
     return {"status": "started", "job_name": job_name}
-
-
-def _extract_provider_from_label(label_name: str | None, prefix: str) -> str | None:
-    """Return validated provider suffix if label matches prefix, else None."""
-    if not label_name or not label_name.startswith(prefix) or len(label_name) <= len(prefix):
-        return None
-    suffix = label_name[len(prefix) :]
-    if suffix in PROVIDER_CONFIG:
-        return suffix
-    return None
-
-
-def issue_find_provider(payload: dict, prefix: str) -> str | None:
-    """Find the first label matching prefix and return the provider suffix, or None."""
-    labels = (payload.get("issue") or {}).get("labels") or []
-    for lb in labels:
-        name = lb.get("name") if isinstance(lb, dict) else str(lb)
-        result = _extract_provider_from_label(name, prefix)
-        if result:
-            return result
-    return None
 
 
 if __name__ == "__main__":

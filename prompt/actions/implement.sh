@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
-# issue_start_prompt.sh — opening task instructions for all AI worker CLIs.
-# Requires: ISSUE_NUMBER, SOURCE_ISSUE_TITLE (env; set by git_workflow / orchestrator).
 
-issue_start_prompt() {
+action_implement_prompt() {
   cat <<EOF
 You are working in a git repository.
 
 Task:
 Fix GitHub issue #${ISSUE_NUMBER}: ${SOURCE_ISSUE_TITLE:-no title}
+EOF
 
+  if [ -n "${SOURCE_ISSUE_BODY:-}" ]; then
+    printf '\n\nIssue description:\n%s\n' "${SOURCE_ISSUE_BODY}"
+  fi
+
+  cat <<'EOF'
 
 Instructions:
 1. Read the issue title and description carefully.

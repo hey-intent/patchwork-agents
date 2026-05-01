@@ -13,6 +13,25 @@ set -euo pipefail
 REPO="${SOURCE_REPO:?}"
 ISSUE_NUMBER="${SOURCE_ISSUE_NUMBER:?}"
 
+agent_set_status() {
+  local status="${1:?status is required}"
+  local labels_json
+
+  labels_json="$(
+    curl -sf \
+      -H "Authorization: token ${GITHUB_TOKEN}" \
+      -H "Accept: application/vnd.github+json" \
+      "https://api.github.com/repos/${REPO}/issues/${ISSUE_NUMBER}/labels" \
+    | jq -c --arg status "$status" '[.[].name | select(startswith("agent:status:") | not)] + [$status]'
+  )"
+
+  curl -sf -X PUT \
+    -H "Authorization: token ${GITHUB_TOKEN}" \
+    -H "Accept: application/vnd.github+json" \
+    "https://api.github.com/repos/${REPO}/issues/${ISSUE_NUMBER}/labels" \
+    -d "$(jq -nc --argjson labels "$labels_json" '{labels:$labels}')"
+}
+
 # Use GIT_ASKPASS to avoid leaking token in process list / git error logs
 _setup_git_askpass() {
   local askpass_script="/tmp/git-askpass.sh"

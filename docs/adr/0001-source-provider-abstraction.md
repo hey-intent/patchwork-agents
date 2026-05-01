@@ -72,7 +72,8 @@ Tradeoffs:
 
 Worker jobs receive **source-agnostic metadata** as `SOURCE_*` environment
 variables (for example `SOURCE_REPO`, `SOURCE_ISSUE_NUMBER`, `SOURCE_ISSUE_BODY`,
-`SOURCE_ISSUE_URL`, `SOURCE_INSTALLATION_ID`, `SOURCE_EVENT_ACTION`) populated
+`SOURCE_ISSUE_URL`, `SOURCE_INSTALLATION_ID`, `SOURCE_ACTION`, `SOURCE_TRIGGER`,
+`SOURCE_TRIGGER_COMMAND`) populated
 from the active `SourceProvider`. The HTTPS clone credential still uses the
 secret key **`GITHUB_TOKEN`** today (GitHub App installation token). Renaming
 that credential for non-GitHub hosts is a separate change.

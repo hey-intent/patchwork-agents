@@ -19,8 +19,9 @@ WORKDIR /app
 COPY --chown=worker:worker images/worker-claude/run.sh /app/run.sh
 COPY --chown=worker:worker providers/ /app/providers/
 COPY --chown=worker:worker prompt/ /app/prompt/
-RUN sed -i 's/\r$//' /app/run.sh /app/providers/*.sh /app/prompt/*.sh \
- && chmod +x /app/run.sh /app/providers/*.sh /app/prompt/*.sh
+RUN sed -i 's/\r$//' /app/run.sh \
+ && find /app/providers /app/prompt -name '*.sh' -exec sed -i 's/\r$//' {} + \
+ && chmod +x /app/run.sh /app/providers/*.sh /app/prompt/*.sh /app/prompt/actions/*.sh
 
 ENV PATH="/home/worker/.local/bin:${PATH}"
 WORKDIR /work

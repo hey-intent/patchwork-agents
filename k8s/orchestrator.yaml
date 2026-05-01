@@ -28,7 +28,7 @@ spec:
                 secretKeyRef:
                   name: orchestrator-config
                   key: JOB_TTL_SECONDS
-            - name: TRIGGER_PREFIX
+            - name: PROVIDER_LABEL_PREFIX
               value: "ai-pr-"
             - name: ADMIN_TOKEN
               valueFrom:

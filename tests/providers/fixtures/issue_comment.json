@@ -1,0 +1,33 @@
+{
+  "action": "created",
+  "issue": {
+    "id": 1001,
+    "number": 7,
+    "title": "Implement provider abstraction",
+    "body": "Move GitHub-specific code behind an interface.",
+    "labels": [
+      {"name": "bug"},
+      {"name": "ai-pr-claude"}
+    ],
+    "user": {"login": "alice"},
+    "html_url": "https://github.com/acme/widgets/issues/7",
+    "state": "open",
+    "created_at": "2026-04-30T08:00:00Z",
+    "updated_at": "2026-04-30T09:00:00Z"
+  },
+  "comment": {
+    "id": 2001,
+    "body": "/agent implement",
+    "user": {"login": "bob"},
+    "created_at": "2026-04-30T10:00:00Z"
+  },
+  "repository": {
+    "full_name": "acme/widgets"
+  },
+  "installation": {
+    "id": 42
+  },
+  "sender": {
+    "login": "bob"
+  }
+}

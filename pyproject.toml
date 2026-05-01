@@ -9,7 +9,7 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
-ignore = ["B008"]
+ignore = ["B008", "UP017"]
 
 # Repo root contains packages `app/` and `providers/`; tests import `app.app`.
 [tool.pytest.ini_options]
