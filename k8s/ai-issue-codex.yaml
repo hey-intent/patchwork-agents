@@ -23,10 +23,10 @@ spec:
             # Ephemeral installation token (generate via GitHub App or use a PAT)
             - name: GITHUB_TOKEN
               value: "CHANGE_ME"
-            # --- Fill in before running ---
-            - name: GITHUB_REPO
+            # --- Fill in before running (SOURCE_* = provider-agnostic metadata) ---
+            - name: SOURCE_REPO
               value: "CHANGE_ME"
-            - name: GITHUB_ISSUE_NUMBER
+            - name: SOURCE_ISSUE_NUMBER
               value: "CHANGE_ME"
-            - name: GITHUB_INSTALLATION_ID
+            - name: SOURCE_INSTALLATION_ID
               value: "CHANGE_ME"

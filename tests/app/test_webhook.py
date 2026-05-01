@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -59,6 +60,32 @@ async def post_webhook(body: bytes, headers: dict):
         return await client.post("/webhook/github", content=body, headers=headers)
 
 
+def _plain_env_from_job(batch: FakeBatch) -> dict[str, str]:
+    _ns, job = batch.created_jobs[0]
+    container = job.spec.template.spec.containers[0]
+    return {e.name: e.value for e in container.env if getattr(e, "value", None) is not None}
+
+
+async def _post_labeled_claude_webhook(monkeypatch, payload: dict):
+    """Simulate validated webhook: issues event, ai-pr-claude label, fake k8s."""
+    event = WebhookEvent(
+        type="issue_labeled",
+        actor="bob",
+        repo=payload["repository"]["full_name"],
+        label="ai-pr-claude",
+        raw=payload,
+    )
+    batch = FakeBatch()
+    core = FakeCore()
+    monkeypatch.setattr(orchestrator, "get_source_provider", lambda: FakeSourceProvider(event=event))
+    monkeypatch.setattr(orchestrator, "load_k8s_client", lambda: (batch, core))
+    response = await post_webhook(
+        json.dumps(payload).encode("utf-8"),
+        {"X-GitHub-Event": "issues"},
+    )
+    return response, batch, core
+
+
 @pytest.mark.asyncio
 async def test_github_webhook_rejects_invalid_signature(monkeypatch):
     monkeypatch.setattr(orchestrator, "get_source_provider", lambda: FakeSourceProvider(verify=False))
@@ -81,16 +108,7 @@ async def test_github_webhook_ignores_non_issue_event(monkeypatch):
 @pytest.mark.asyncio
 async def test_github_webhook_triggers_worker_job(monkeypatch):
     payload = load_payload("issue_labeled.json")
-    event = WebhookEvent(type="issue_labeled", actor="bob", repo="acme/widgets", label="ai-pr-claude", raw=payload)
-    batch = FakeBatch()
-    core = FakeCore()
-    monkeypatch.setattr(orchestrator, "get_source_provider", lambda: FakeSourceProvider(event=event))
-    monkeypatch.setattr(orchestrator, "load_k8s_client", lambda: (batch, core))
-
-    response = await post_webhook(
-        json.dumps(payload).encode("utf-8"),
-        {"X-GitHub-Event": "issues"},
-    )
+    response, batch, core = await _post_labeled_claude_webhook(monkeypatch, payload)
 
     assert response.status_code == 200
     data = response.json()
@@ -102,3 +120,46 @@ async def test_github_webhook_triggers_worker_job(monkeypatch):
     assert len(core.secrets) == 1
     assert core.secrets[0][1].string_data == {"GITHUB_TOKEN": "installation-token"}
     assert len(batch.created_jobs) == 1
+    env_plain = _plain_env_from_job(batch)
+    assert env_plain["SOURCE_ISSUE_BODY"] == payload["issue"]["body"]
+
+
+@pytest.mark.asyncio
+async def test_github_webhook_issue_body_truncated(monkeypatch):
+    payload = copy.deepcopy(load_payload("issue_labeled.json"))
+    cap = orchestrator._MAX_ISSUE_BODY_CHARS
+    payload["issue"]["body"] = "Z" * (cap + 500)
+
+    response, batch, _core = await _post_labeled_claude_webhook(monkeypatch, payload)
+
+    assert response.status_code == 200
+    assert response.json()["triggered"] is True
+    env_plain = _plain_env_from_job(batch)
+    assert len(env_plain["SOURCE_ISSUE_BODY"]) == cap
+    assert env_plain["SOURCE_ISSUE_BODY"] == "Z" * cap
+
+
+@pytest.mark.asyncio
+async def test_github_webhook_issue_body_missing(monkeypatch):
+    payload = copy.deepcopy(load_payload("issue_labeled.json"))
+    del payload["issue"]["body"]
+
+    response, batch, _core = await _post_labeled_claude_webhook(monkeypatch, payload)
+
+    assert response.status_code == 200
+    assert response.json()["triggered"] is True
+    env_plain = _plain_env_from_job(batch)
+    assert env_plain["SOURCE_ISSUE_BODY"] == ""
+
+
+@pytest.mark.asyncio
+async def test_github_webhook_issue_body_non_string(monkeypatch):
+    payload = copy.deepcopy(load_payload("issue_labeled.json"))
+    payload["issue"]["body"] = ["unexpected", "list"]
+
+    response, batch, _core = await _post_labeled_claude_webhook(monkeypatch, payload)
+
+    assert response.status_code == 200
+    assert response.json()["triggered"] is True
+    env_plain = _plain_env_from_job(batch)
+    assert env_plain["SOURCE_ISSUE_BODY"] == ""

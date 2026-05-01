@@ -25,6 +25,7 @@ If your report contains secrets, rotate them immediately after sharing.
 - Never commit real secret values to git history.
 - Kubernetes secret manifests under `k8s/secrets/` are templates only.
 - Webhook fixture files under `tests/` must be anonymized and must not contain real repository names, users, tokens, signatures, private issue content, or internal URLs.
+- **Worker Jobs** receive issue metadata in environment variables (`SOURCE_ISSUE_TITLE`, `SOURCE_ISSUE_BODY`, etc.). Issue bodies are **untrusted user content**; they are included in AI prompts after an orchestrator-side size cap. Operators should assume **prompt-injection** risk from issue text (same class of risk as pasting issue content into any LLM). Do not log full `SOURCE_ISSUE_BODY` in production.
 
 ## Source Provider Security
 

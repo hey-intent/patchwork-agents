@@ -29,6 +29,9 @@ from providers.source import (
     get_provider,
 )
 
+# Issue body in a pod env var must stay bounded (etcd / API limits, huge GitHub bodies).
+_MAX_ISSUE_BODY_CHARS = 65536
+
 # --- Logging setup ---
 # Use uvicorn's logger so messages aren't disabled by uvicorn's dictConfig
 logger = logging.getLogger("uvicorn.error")
@@ -322,6 +325,8 @@ async def github_webhook(request: Request):
     issue = payload.get("issue") or {}
     issue_number = issue.get("number")
     issue_title = issue.get("title", "")[:200]
+    raw_issue_body = issue.get("body")
+    issue_body = (raw_issue_body if isinstance(raw_issue_body, str) else "")[:_MAX_ISSUE_BODY_CHARS]
     issue_url = issue.get("html_url", "")
     installation_id = (payload.get("installation") or {}).get("id")
 
@@ -356,12 +361,14 @@ async def github_webhook(request: Request):
         cfg=cfg,
         provider=provider,
         env_vars={
-            "GITHUB_REPO": repo_full,
-            "GITHUB_ISSUE_NUMBER": str(issue_number),
-            "GITHUB_EVENT_ACTION": str(action),
-            "GITHUB_ISSUE_TITLE": issue_title,
-            "GITHUB_ISSUE_URL": issue_url,
-            "GITHUB_INSTALLATION_ID": str(installation_id),
+            # Source-provider-agnostic metadata (see docs/adr/0001-source-provider-abstraction.md).
+            "SOURCE_REPO": repo_full,
+            "SOURCE_ISSUE_NUMBER": str(issue_number),
+            "SOURCE_EVENT_ACTION": str(action),
+            "SOURCE_ISSUE_TITLE": issue_title,
+            "SOURCE_ISSUE_BODY": issue_body,
+            "SOURCE_ISSUE_URL": issue_url,
+            "SOURCE_INSTALLATION_ID": str(installation_id),
         },
         github_token_secret_name=token_secret_name,
     )
