@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from .models import Comment, Issue, PullRequest, WebhookEvent
+from .models import ActionTrigger, Comment, Issue, PullRequest, WebhookEvent
 
 
 class SourceProviderError(Exception):
@@ -33,6 +33,14 @@ class SourceProvider(ABC):
     @abstractmethod
     async def parse_event(self, headers: dict, body: bytes) -> WebhookEvent | None:
         """Parse provider-specific webhook payload into a generic event."""
+
+    @abstractmethod
+    def get_action_trigger(self, event: WebhookEvent) -> ActionTrigger | None:
+        """Return an agent action requested by a source event, if any."""
+
+    @abstractmethod
+    async def can_trigger_action(self, event: WebhookEvent, trigger: ActionTrigger) -> bool:
+        """Return whether the event actor is allowed to trigger this action."""
 
     @abstractmethod
     async def get_issue(self, repo: str, issue_id: str) -> Issue:

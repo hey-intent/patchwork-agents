@@ -12,7 +12,7 @@ def _env_bool(name: str, default: str = "false") -> bool:
 class Settings:
     namespace: str = os.getenv("NAMESPACE", "ai-bot")
     job_ttl_seconds: int = int(os.getenv("JOB_TTL_SECONDS", "3600"))
-    trigger_prefix: str = os.getenv("TRIGGER_PREFIX", "ai-pr-")
+    provider_label_prefix: str = os.getenv("PROVIDER_LABEL_PREFIX", "ai-pr-")
     webhook_secret: str = os.getenv("WEBHOOK_SECRET", "")
     admin_token: str = os.getenv("ADMIN_TOKEN", "")
     enable_k8s_debug: bool = _env_bool("ENABLE_K8S_DEBUG")

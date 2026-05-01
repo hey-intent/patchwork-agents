@@ -59,7 +59,7 @@ Merci de contribuer a PatchworkAgent ! Ce guide explique comment ajouter un nouv
 
 ## Ajouter un nouveau provider IA
 
-Pour ajouter un provider `myprovider` avec le label de declenchement `ai-pr-myprovider` :
+Pour ajouter un provider `myprovider` configure par le label `ai-pr-myprovider` :
 
 ### 1. Script provider : `providers/myprovider.sh`
 
@@ -191,7 +191,7 @@ docker save worker-myprovider:latest | sudo k3s ctr images import -
 kubectl -n ai-bot apply -f k8s/debug-myprovider.yaml
 kubectl -n ai-bot logs -f job/debug-myprovider
 
-# Test end-to-end : ajouter le label ai-pr-myprovider sur une issue
+# Test end-to-end : ajouter le label ai-pr-myprovider puis commenter /agent implement sur une issue
 ```
 
 ---
@@ -242,7 +242,8 @@ kubectl -n ai-bot logs -f deploy/orchestrator --tail=200
 
 | Element | Convention | Exemple |
 |---------|-----------|---------|
-| Label GitHub | `ai-pr-<provider>` | `ai-pr-claude` |
+| Label provider GitHub | `ai-pr-<provider>` | `ai-pr-claude` |
+| Commande agent | `/agent <action>` | `/agent implement` |
 | Image Docker | `worker-<provider>:latest` | `worker-aider:latest` |
 | Secret K8s | `<service>-api-key` | `openrouter-api-key` |
 | Script provider | `providers/<provider>.sh` | `providers/aider.sh` |

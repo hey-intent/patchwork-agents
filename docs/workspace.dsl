@@ -26,10 +26,10 @@ workspace "PatchworkAgent" "Kubernetes-native system that automatically solves G
         }
 
         # --- Relationships: Developer ---
-        developer -> github "Opens issues, adds labels (ai-pr-*), reviews PRs"
+        developer -> github "Opens issues, configures provider labels (ai-pr-*), comments /agent commands, reviews PRs"
 
         # --- Relationships: GitHub <-> System ---
-        github -> orchestrator "Sends issue webhook (POST /webhook/github)" "HTTPS / JSON"
+        github -> orchestrator "Sends issue and issue_comment webhooks (POST /webhook/github)" "HTTPS / JSON"
         orchestrator -> github "Generates ephemeral installation tokens" "HTTPS / GitHub App JWT (RS256)"
 
         workerClaude -> github "Clones repo, pushes branch, creates PR" "HTTPS / git + gh CLI"
@@ -111,19 +111,20 @@ workspace "PatchworkAgent" "Kubernetes-native system that automatically solves G
         }
 
         # --- Dynamic: Issue Resolution Flow ---
-        dynamic aiPrBot "IssueResolutionFlow" "End-to-end flow when a developer labels an issue with ai-pr-claude" {
-            developer -> github "1. Adds label 'ai-pr-claude' to issue"
-            github -> orchestrator "2. Webhook POST /webhook/github"
-            orchestrator -> secrets "3. Reads GitHub App PEM + webhook secret"
-            orchestrator -> github "4. Generates installation token (JWT -> installation token)"
-            orchestrator -> k8sApi "5. Creates ephemeral Secret with GITHUB_TOKEN"
-            orchestrator -> k8sApi "6. Creates Job (ai-pr-*-claude)"
-            k8sApi -> workerClaude "7. Schedules worker pod"
-            workerClaude -> secrets "8. Reads ANTHROPIC_API_KEY + ephemeral GITHUB_TOKEN"
-            workerClaude -> github "9. Clones repository"
-            workerClaude -> anthropicApi "10. Invokes Claude Code CLI for fix"
-            workerClaude -> github "11. Pushes branch + creates PR"
-            developer -> github "12. Reviews and merges PR"
+        dynamic aiPrBot "IssueResolutionFlow" "End-to-end flow when a developer comments /agent implement on an ai-pr-claude issue" {
+            developer -> github "1. Adds label 'ai-pr-claude' to configure provider"
+            developer -> github "2. Comments '/agent implement' on issue"
+            github -> orchestrator "3. Webhook POST /webhook/github"
+            orchestrator -> secrets "4. Reads GitHub App PEM + webhook secret"
+            orchestrator -> github "5. Generates installation token (JWT -> installation token)"
+            orchestrator -> k8sApi "6. Creates ephemeral Secret with GITHUB_TOKEN"
+            orchestrator -> k8sApi "7. Creates Job (ai-pr-*-claude)"
+            k8sApi -> workerClaude "8. Schedules worker pod"
+            workerClaude -> secrets "9. Reads ANTHROPIC_API_KEY + ephemeral GITHUB_TOKEN"
+            workerClaude -> github "10. Clones repository"
+            workerClaude -> anthropicApi "11. Invokes Claude Code CLI for fix"
+            workerClaude -> github "12. Pushes branch + creates PR"
+            developer -> github "13. Reviews and merges PR"
             autoLayout
         }
 

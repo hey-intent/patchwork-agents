@@ -4,7 +4,7 @@ Kubernetes orchestrator that turns GitHub issues into pull requests using AI age
 
 ## Why this project
 
-This project automates the **Issue -> Label -> Pull Request** flow: an `ai-pr-*` label on an issue triggers an AI worker that clones the repo, solves the problem, and opens a PR.
+This project automates the **Issue -> Provider Label -> /agent command -> Pull Request** flow: an `ai-pr-*` label configures the AI worker provider, and an issue comment such as `/agent implement` starts the worker that clones the repo, solves the problem, and opens a PR.
 
 It avoids AI vendor lock-in with 3 built-in worker providers:
 
@@ -32,7 +32,7 @@ Tested on: VPS / 8 GB RAM / 4 vCPU / k3s single-node.
 ![PatchworkAgent Architecture](illustration.png)
 
 ```
-GitHub Issue (label ai-pr-*)
+GitHub Issue (ai-pr-* label + /agent implement comment)
        |
        v
   POST /webhook/github
@@ -61,7 +61,8 @@ Workers receive only the short-lived token and never receive the PEM key.
 **Job environment (metadata)** : the orchestrator injects source-agnostic
 variables for each worker Job: `SOURCE_REPO`, `SOURCE_ISSUE_NUMBER`,
 `SOURCE_ISSUE_TITLE`, `SOURCE_ISSUE_BODY` (GitHub issue description, bounded to
-64 KiB), `SOURCE_ISSUE_URL`, `SOURCE_EVENT_ACTION`, `SOURCE_INSTALLATION_ID`.
+64 KiB), `SOURCE_ISSUE_URL`, `SOURCE_INSTALLATION_ID`, `SOURCE_ACTION`,
+`SOURCE_TRIGGER`, `SOURCE_TRIGGER_COMMAND`.
 See `docs/adr/0001-source-provider-abstraction.md`. The clone credential secret
 key remains `GITHUB_TOKEN` (installation token).
 
@@ -158,7 +159,10 @@ kubectl -n ai-bot apply -f k8s/orchestrator.yaml
 
 ### 4. Usage
 
-Add a label `ai-pr-claude`, `ai-pr-codex`, or `ai-pr-aider` to a GitHub issue. The bot automatically creates a PR.
+Add a label `ai-pr-claude`, `ai-pr-codex`, or `ai-pr-aider` to configure the provider, then comment `/agent implement` on the issue. The bot creates a PR.
+
+Migration note: `TRIGGER_PREFIX` has been removed. Use
+`PROVIDER_LABEL_PREFIX` to configure provider label matching.
 
 ---
 
@@ -331,8 +335,8 @@ sudo systemctl status k3s --no-pager -l
 |   |-- debug-*.yaml            # Debug jobs per provider
 |   `-- secrets/                # Templates (no values)
 |-- prompt/
-|   |-- issue_prompt.sh       # Optional SOURCE_ISSUE_BODY appendix
-|   `-- issue_start_prompt.sh  # Shared task instructions (all workers)
+|   |-- action_prompt.sh       # Dispatches prompts by SOURCE_ACTION
+|   `-- actions/               # Action-specific worker prompts
 |-- providers/
 |   |-- source/                 # SourceProvider interface + GitHub implementation
 |   |-- git_workflow.sh         # Shared Git logic

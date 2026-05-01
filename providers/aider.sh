@@ -7,23 +7,21 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROMPT_DIR="$(cd "$SCRIPT_DIR/../prompt" && pwd)"
-source "$PROMPT_DIR/issue_prompt.sh"
-source "$PROMPT_DIR/issue_start_prompt.sh"
+source "$PROMPT_DIR/action_prompt.sh"
 
 # ── 1. Authenticate ──
 : "${GITHUB_TOKEN:?GITHUB_TOKEN is required}"
 
 # ── 2. Clone & branch ──
 source "$SCRIPT_DIR/git_workflow.sh"
+trap 'agent_set_status "agent:status:failed" || true' ERR
+FULL_MSG="$(build_action_prompt)"
 git_clone_and_branch
 
 # ── 3. Run Aider via OpenRouter ──
 AIDER_MODEL="${AIDER_MODEL:-openrouter/anthropic/claude-sonnet-4}"
 
 echo "Running Aider (model=$AIDER_MODEL) for issue #${ISSUE_NUMBER} ..."
-
-BASE_MSG="$(issue_start_prompt)"
-FULL_MSG="$(issue_append_issue_body "$BASE_MSG")"
 
 aider \
   --model "$AIDER_MODEL" \
@@ -40,5 +38,6 @@ fi
 
 # ── 4. Push & create PR ──
 git_push_and_pr "Automated PR created by Aider (OpenRouter) for issue #${ISSUE_NUMBER}."
+agent_set_status "agent:status:done"
 
 echo "Done"
