@@ -6,7 +6,7 @@ Kubernetes orchestrator that turns GitHub issues into pull requests using AI age
 
 This project automates the **Issue -> Label -> Pull Request** flow: an `ai-pr-*` label on an issue triggers an AI worker that clones the repo, solves the problem, and opens a PR.
 
-It avoids vendor lock-in with 3 built-in providers:
+It avoids AI vendor lock-in with 3 built-in worker providers:
 
 | Label          | Provider    | Backend                 |
 | -------------- | ----------- | ----------------------- |
@@ -14,7 +14,12 @@ It avoids vendor lock-in with 3 built-in providers:
 | `ai-pr-codex`  | Codex       | OpenAI                  |
 | `ai-pr-aider`  | Aider       | OpenRouter (extensible) |
 
-The architecture is designed to easily add more providers (see `CONTRIBUTING.md`).
+The source hosting layer is abstracted behind `SourceProvider`; GitHub is the
+only built-in source provider today. See
+`docs/adr/0001-source-provider-abstraction.md` for the design decision.
+
+The worker architecture is designed to easily add more AI providers (see
+`CONTRIBUTING.md`).
 
 Tested on: VPS / 8 GB RAM / 4 vCPU / k3s single-node.
 
@@ -36,8 +41,9 @@ GitHub Issue (label ai-pr-*)
   +-------------------+
   |   Orchestrator     |  Deployment FastAPI
   |   app/app.py       |
+  | providers/source   |  GitHub webhook + clone credentials
   +--------+----------+
-           | creates a K8s Job based on the provider
+           | creates a K8s Job based on the AI worker provider
            v
   +----------------+     +----------------+     +----------------+
   | worker-claude  |     | worker-codex   |     | worker-aider   |
@@ -48,7 +54,9 @@ GitHub Issue (label ai-pr-*)
     clone > AI fix > commit > push > PR
 ```
 
-**GitHub auth flow**: the orchestrator generates an ephemeral installation token (1h) via GitHub App JWT. Workers never receive the PEM key.
+**Source auth flow**: `GitHubProvider` generates an ephemeral installation token
+(1h) via GitHub App JWT and returns git clone credentials to the orchestrator.
+Workers receive only the short-lived token and never receive the PEM key.
 
 ---
 
@@ -57,7 +65,7 @@ GitHub Issue (label ai-pr-*)
 ### 1. Prerequisites
 
 - A VPS (or machine) with 4 vCPU / 8 GB RAM minimum
-- API keys for your desired providers
+- API keys for your desired AI worker providers
 - **Ansible option**: `ansible` installed locally + SSH root access to the VPS
 - **Manual option**: k3s, Docker, and `kubectl` installed on the VPS
 
@@ -253,9 +261,9 @@ curl -s -X POST http://127.0.0.1:8080/jobs/run -H "Authorization: Bearer <ADMIN_
 | --- | --- | --- |
 | **Incoming webhook** | Fake webhook to trigger a job | HMAC-SHA256 signature (`WEBHOOK_SECRET`) verified on every request |
 | **Admin endpoints** | Unauthorized access | Bearer token (`ADMIN_TOKEN`), not exposed via Ingress |
-| **GitHub App private key** | Theft = full access | PEM in orchestrator pod only, workers receive an ephemeral token (1h) |
+| **Source-provider private key** | Theft = source repo access | Secret stays in orchestrator pod only; workers receive short-lived clone credentials |
 | **GitHub token (workers)** | Compromised worker | Token stored in ephemeral K8s Secret (ownerReference to Job), scoped to one installation, expires in 1h, ephemeral container |
-| **AI API keys** | Leak | Injected via K8s `secretKeyRef`, one secret per provider |
+| **AI API keys** | Leak | Injected via K8s `secretKeyRef`, one secret per AI worker provider |
 | **AI code execution** | Malicious code | Workers run as non-root, ephemeral, no persistent volume |
 | **Git credentials** | Token in logs | Auth via `GIT_ASKPASS`, no token in URLs |
 | **K8s RBAC** | Out-of-scope access | Role limited to `ai-bot` namespace, workers without ServiceAccount |
@@ -266,7 +274,9 @@ curl -s -X POST http://127.0.0.1:8080/jobs/run -H "Authorization: Bearer <ADMIN_
 - Restrict RBAC access to Secrets and Jobs
 - Monitor jobs > 30 min (token expires at 1h)
 - Regularly rotate `WEBHOOK_SECRET` and `ADMIN_TOKEN`
-- See `SECURITY.md` for vulnerability reporting
+- Review any new `SourceProvider` for webhook verification, credential scope,
+  and logging behavior
+- See `SECURITY.md` for vulnerability reporting and provider security rules
 
 ---
 
@@ -294,6 +304,7 @@ sudo systemctl status k3s --no-pager -l
 .
 |-- app/
 |   |-- app.py                  # FastAPI Orchestrator
+|   |-- config.py               # Runtime env/config
 |   `-- requirements.txt
 |-- images/
 |   |-- orchestrator/Dockerfile
@@ -308,6 +319,7 @@ sudo systemctl status k3s --no-pager -l
 |   |-- debug-*.yaml            # Debug jobs per provider
 |   `-- secrets/                # Templates (no values)
 |-- providers/
+|   |-- source/                 # SourceProvider interface + GitHub implementation
 |   |-- git_workflow.sh         # Shared Git logic
 |   |-- claude_code.sh
 |   |-- openai.sh
@@ -320,7 +332,7 @@ sudo systemctl status k3s --no-pager -l
 |   |-- requirements.yml        # Ansible collections
 |   `-- group_vars/vps.yml
 |-- docs/
-|   |-- catalog-info.yaml       # Backstage service catalog
+|   |-- adr/                    # Architecture decision records
 |   `-- workspace.dsl           # C4 architecture (Structurizr)
 |-- .github/
 |   `-- workflows/secret-scan.yml  # CI secret scanning

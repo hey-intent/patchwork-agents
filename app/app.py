@@ -2,93 +2,44 @@
 """
 app.py - FastAPI service to manage a GitHub App secret and create Kubernetes Jobs.
 ...
-(la même docstring)
+(la mÃªme docstring)
 """
 
 from __future__ import annotations
+
+import base64
+import logging
 import os
 import re
-import base64
-import typing as t
-from dataclasses import dataclass
-from datetime import datetime, timezone
-import uuid
-import logging
 import secrets
-import time
+import uuid
+from datetime import UTC, datetime
 
-from fastapi import FastAPI, HTTPException, Body, Request, Depends
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel, Field
+from fastapi import Body, Depends, FastAPI, HTTPException, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
-import hmac
-import hashlib
-import jwt
-import httpx
+from pydantic import BaseModel, Field
 
-# --- Config / env ---
-NAMESPACE = os.getenv("NAMESPACE", "ai-bot")
-JOB_TTL_SECONDS = int(os.getenv("JOB_TTL_SECONDS", "3600"))
-TRIGGER_PREFIX = os.getenv("TRIGGER_PREFIX", "ai-pr-")
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")  # required in prod
-ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")  # bearer token for admin endpoints
-ENABLE_K8S_DEBUG = os.getenv("ENABLE_K8S_DEBUG", "false").lower() in ("1", "true", "yes")
-
-# Worker images (configurable via env)
-CLAUDE_WORKER_IMAGE = os.getenv("CLAUDE_WORKER_IMAGE", "worker-claude:latest")
-CODEX_WORKER_IMAGE = os.getenv("CODEX_WORKER_IMAGE", "worker-codex:latest")
-AIDER_WORKER_IMAGE = os.getenv("AIDER_WORKER_IMAGE", "worker-aider:latest")
-
-# GitHub App credentials (used to generate ephemeral installation tokens)
-GITHUB_APP_ID = os.getenv("GITHUB_APP_ID", "")
-GITHUB_PRIVATE_KEY = os.getenv("GITHUB_PRIVATE_KEY", "")
-
-
-@dataclass(frozen=True)
-class ProviderSecretRef:
-    env_name: str
-    secret_name: str
-    secret_key: str
-
-
-@dataclass(frozen=True)
-class ProviderConfig:
-    image: str
-    ai_provider: str
-    api_secret: ProviderSecretRef
-    extra_env: tuple[tuple[str, str], ...] = ()
-    extra_secrets: tuple[ProviderSecretRef, ...] = ()
-
-
-# Per-provider config: image and API key secret
-PROVIDER_CONFIG: dict[str, ProviderConfig] = {
-    "claude": ProviderConfig(
-        image=CLAUDE_WORKER_IMAGE,
-        ai_provider="claude_code",
-        api_secret=ProviderSecretRef("ANTHROPIC_API_KEY", "anthropic-api-key", "ANTHROPIC_API_KEY"),
-    ),
-    "codex": ProviderConfig(
-        image=CODEX_WORKER_IMAGE,
-        ai_provider="openai",
-        api_secret=ProviderSecretRef("OPENAI_API_KEY", "openai-api-key", "OPENAI_API_KEY"),
-    ),
-    "aider": ProviderConfig(
-        image=AIDER_WORKER_IMAGE,
-        ai_provider="aider",
-        api_secret=ProviderSecretRef("OPENROUTER_API_KEY", "openrouter-api-key", "OPENROUTER_API_KEY"),
-    ),
-}
+from app.config import PROVIDER_CONFIG, ProviderConfig, settings
+from providers.source import (
+    SourceProviderAPIError,
+    SourceProviderConfigurationError,
+    SourceProviderError,
+    get_provider,
+)
 
 # --- Logging setup ---
 # Use uvicorn's logger so messages aren't disabled by uvicorn's dictConfig
 logger = logging.getLogger("uvicorn.error")
 
-if ENABLE_K8S_DEBUG:
-    # debug du client k8s / urllib3 (affiche les requêtes HTTP vers l'API server)
+if settings.enable_k8s_debug:
+    # debug du client k8s / urllib3 (affiche les requÃªtes HTTP vers l'API server)
     logging.getLogger("kubernetes").setLevel(logging.DEBUG)
     logging.getLogger("urllib3").setLevel(logging.DEBUG)
-    logger.warning("Kubernetes client debug ENABLED (ENABLE_K8S_DEBUG=true) - do NOT enable in production if logs leak secrets")
+    logger.warning(
+        "Kubernetes client debug ENABLED (ENABLE_K8S_DEBUG=true) - do NOT enable in production if logs leak secrets"
+    )
 
 app = FastAPI(title="orchestrator", version="1.0")
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -96,11 +47,12 @@ bearer_scheme = HTTPBearer(auto_error=False)
 
 def verify_admin_token(credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme)):
     """Require a valid bearer token for admin endpoints."""
-    if not ADMIN_TOKEN:
+    if not settings.admin_token:
         raise HTTPException(status_code=503, detail="ADMIN_TOKEN not configured")
-    if not credentials or not secrets.compare_digest(credentials.credentials, ADMIN_TOKEN):
+    if not credentials or not secrets.compare_digest(credentials.credentials, settings.admin_token):
         raise HTTPException(status_code=401, detail="invalid or missing bearer token")
     return True
+
 
 def load_k8s_client():
     """
@@ -118,41 +70,19 @@ def load_k8s_client():
             config.load_kube_config()
     return client.BatchV1Api(), client.CoreV1Api()
 
+
 def safe_name(s: str) -> str:
     s2 = re.sub(r"[^a-z0-9-]+", "-", s.lower()).strip("-")
-    return (s2[:50] or "job")
+    return s2[:50] or "job"
 
-async def _generate_installation_token(installation_id: str) -> str:
-    """Generate an ephemeral GitHub installation token (1h) from App credentials."""
-    if not GITHUB_APP_ID or not GITHUB_PRIVATE_KEY:
-        raise HTTPException(status_code=500, detail="GITHUB_APP_ID and GITHUB_PRIVATE_KEY must be configured")
 
-    now = int(time.time())
-    payload = {
-        "iat": now - 60,
-        "exp": now + 600,
-        "iss": GITHUB_APP_ID,
-    }
-    encoded_jwt = jwt.encode(payload, GITHUB_PRIVATE_KEY, algorithm="RS256")
-
-    url = f"https://api.github.com/app/installations/{installation_id}/access_tokens"
-    headers = {
-        "Authorization": f"Bearer {encoded_jwt}",
-        "Accept": "application/vnd.github+json",
-    }
-
-    async with httpx.AsyncClient() as http_client:
-        resp = await http_client.post(url, headers=headers)
-
-    if resp.status_code != 201:
-        logger.error("GitHub token exchange failed: status=%s body=%s", resp.status_code, resp.text[:500])
-        raise HTTPException(status_code=500, detail=f"GitHub installation token exchange failed ({resp.status_code})")
-
-    token = resp.json().get("token")
-    if not token:
-        raise HTTPException(status_code=500, detail="GitHub API returned no token")
-
-    return token
+def get_source_provider():
+    return get_provider(
+        "github",
+        app_id=settings.github_app_id,
+        private_key=settings.github_private_key,
+        webhook_secret=settings.webhook_secret,
+    )
 
 
 def _build_worker_job(
@@ -202,35 +132,37 @@ def _build_worker_job(
         )
 
     container = client.V1Container(
-        name="worker", image=cfg.image, image_pull_policy="Never",
+        name="worker",
+        image=cfg.image,
+        image_pull_policy="Never",
         env=env_list,
     )
     template = client.V1PodTemplateSpec(
         metadata=client.V1ObjectMeta(labels={"job-name": job_name, "provider": provider}),
         spec=client.V1PodSpec(restart_policy="Never", containers=[container]),
     )
-    job_spec = client.V1JobSpec(template=template, backoff_limit=0, ttl_seconds_after_finished=JOB_TTL_SECONDS)
-    return client.V1Job(metadata=client.V1ObjectMeta(name=job_name, namespace=NAMESPACE), spec=job_spec)
+    job_spec = client.V1JobSpec(template=template, backoff_limit=0, ttl_seconds_after_finished=settings.job_ttl_seconds)
+    return client.V1Job(metadata=client.V1ObjectMeta(name=job_name, namespace=settings.namespace), spec=job_spec)
 
 
 def _create_or_replace_secret(core: client.CoreV1Api, name: str, string_data: dict[str, str]) -> None:
     body = client.V1Secret(
-        metadata=client.V1ObjectMeta(name=name, namespace=NAMESPACE),
+        metadata=client.V1ObjectMeta(name=name, namespace=settings.namespace),
         type="Opaque",
         string_data=string_data,
     )
     try:
-        core.create_namespaced_secret(namespace=NAMESPACE, body=body)
+        core.create_namespaced_secret(namespace=settings.namespace, body=body)
     except ApiException as e:
         if e.status == 409:
-            core.patch_namespaced_secret(name=name, namespace=NAMESPACE, body=body)
+            core.patch_namespaced_secret(name=name, namespace=settings.namespace, body=body)
         else:
             raise
 
 
 def _delete_secret_if_exists(core: client.CoreV1Api, name: str) -> None:
     try:
-        core.delete_namespaced_secret(name=name, namespace=NAMESPACE)
+        core.delete_namespaced_secret(name=name, namespace=settings.namespace)
     except ApiException as e:
         if e.status != 404:
             raise
@@ -246,24 +178,28 @@ def _attach_job_owner_to_secret(core: client.CoreV1Api, secret_name: str, job_na
         block_owner_deletion=False,
     )
     patch_body = {"metadata": {"ownerReferences": [owner_ref.to_dict()]}}
-    core.patch_namespaced_secret(name=secret_name, namespace=NAMESPACE, body=patch_body)
+    core.patch_namespaced_secret(name=secret_name, namespace=settings.namespace, body=patch_body)
+
 
 class SecretPayload(BaseModel):
     github_app_id: str = Field(..., alias="GITHUB_APP_ID")
-    github_private_key_pem: t.Optional[str] = Field(None, alias="GITHUB_PRIVATE_KEY_PEM")
-    github_private_key_path: t.Optional[str] = Field(None, alias="GITHUB_PRIVATE_KEY_PATH")
+    github_private_key_pem: str | None = Field(None, alias="GITHUB_PRIVATE_KEY_PEM")
+    github_private_key_path: str | None = Field(None, alias="GITHUB_PRIVATE_KEY_PATH")
     replace: bool = Field(True, description="If true, apply/replace the secret (default true)")
+
 
 class JobSpec(BaseModel):
     name: str
-    image: t.Optional[str] = CLAUDE_WORKER_IMAGE
-    command: t.Optional[t.List[str]] = None
-    env: t.Optional[t.Dict[str, str]] = None
+    image: str | None = settings.claude_worker_image
+    command: list[str] | None = None
+    env: dict[str, str] | None = None
     backoff_limit: int = 0
+
 
 @app.get("/healthz")
 def healthz():
     return {"ok": True}
+
 
 @app.post("/secrets/github-app", status_code=201)
 def create_or_update_github_app_secret(payload: SecretPayload = Body(...), _auth: bool = Depends(verify_admin_token)):
@@ -282,34 +218,57 @@ def create_or_update_github_app_secret(payload: SecretPayload = Body(...), _auth
         with open(path, "rb") as fh:
             pem_bytes = fh.read()
     else:
-        raise HTTPException(status_code=400, detail="either GITHUB_PRIVATE_KEY_PEM or GITHUB_PRIVATE_KEY_PATH is required")
+        raise HTTPException(
+            status_code=400,
+            detail="either GITHUB_PRIVATE_KEY_PEM or GITHUB_PRIVATE_KEY_PATH is required",
+        )
 
-    data_b64 = {k: base64.b64encode(v).decode("utf-8") for k, v in {"GITHUB_APP_ID": data["GITHUB_APP_ID"], "GITHUB_PRIVATE_KEY": pem_bytes}.items()}
+    data_b64 = {
+        k: base64.b64encode(v).decode("utf-8")
+        for k, v in {
+            "GITHUB_APP_ID": data["GITHUB_APP_ID"],
+            "GITHUB_PRIVATE_KEY": pem_bytes,
+        }.items()
+    }
 
     secret = client.V1Secret(
-        metadata=client.V1ObjectMeta(name=name, namespace=NAMESPACE),
+        metadata=client.V1ObjectMeta(name=name, namespace=settings.namespace),
         type="Opaque",
         data=data_b64,
     )
 
     try:
-        core.patch_namespaced_secret(name=name, namespace=NAMESPACE, body=secret)
+        core.patch_namespaced_secret(name=name, namespace=settings.namespace, body=secret)
         action = "patched"
     except ApiException as e:
         if e.status == 404:
-            core.create_namespaced_secret(namespace=NAMESPACE, body=secret)
+            core.create_namespaced_secret(namespace=settings.namespace, body=secret)
             action = "created"
         else:
-            logger.exception("k8s error when creating/patching secret: status=%s reason=%s", getattr(e,'status',None), getattr(e,'reason',None))
-            raise HTTPException(status_code=500, detail=f"k8s error: {e.reason} ({getattr(e, 'status', '')})")
-    return {"result": action, "secret": name, "namespace": NAMESPACE, "updated_at": datetime.now(timezone.utc).isoformat()}
+            logger.exception(
+                "k8s error when creating/patching secret: status=%s reason=%s",
+                getattr(e, "status", None),
+                getattr(e, "reason", None),
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=f"k8s error: {e.reason} ({getattr(e, 'status', '')})",
+            ) from e
+    return {
+        "result": action,
+        "secret": name,
+        "namespace": settings.namespace,
+        "updated_at": datetime.now(UTC).isoformat(),
+    }
+
 
 @app.post("/webhook/github")
 async def github_webhook(request: Request):
     body = await request.body()
+    headers = dict(request.headers)
+    source_provider = get_source_provider()
 
-    sig256 = request.headers.get("X-Hub-Signature-256")
-    if not verify_github_signature(WEBHOOK_SECRET, body, sig256):
+    if not await source_provider.verify_webhook(headers, body):
         logger.warning("Invalid webhook signature")
         raise HTTPException(status_code=401, detail="invalid webhook signature")
 
@@ -318,28 +277,37 @@ async def github_webhook(request: Request):
         logger.info("Ignored event=%s", event)
         return {"ok": True, "ignored": True, "reason": f"event={event}"}
 
-    payload = await request.json()
+    source_event = await source_provider.parse_event(headers, body)
+    if not source_event:
+        logger.info("Ignored unhandled GitHub event=%s", event)
+        return {"ok": True, "ignored": True, "reason": f"event={event}"}
+
+    payload = source_event.raw
     action = payload.get("action")
 
-    logger.info("Webhook received: event=issues action=%s repo=%s", action, ((payload.get("repository") or {}).get("full_name")))
+    logger.info(
+        "Webhook received: event=issues action=%s repo=%s",
+        action,
+        ((payload.get("repository") or {}).get("full_name")),
+    )
 
-    logger.debug("TRIGGER_PREFIX: %s", TRIGGER_PREFIX)
+    logger.debug("TRIGGER_PREFIX: %s", settings.trigger_prefix)
     logger.debug("PAYLOAD LABEL: %s", payload.get("label"))
 
-    # Decide whether we trigger — match any label starting with TRIGGER_PREFIX
+    # Decide whether we trigger â€” match any label starting with TRIGGER_PREFIX
     # e.g. "ai-pr-claude", "ai-pr-openai"
     provider = None
 
     if action == "opened":
-        provider = issue_find_provider(payload, TRIGGER_PREFIX)
+        provider = issue_find_provider(payload, settings.trigger_prefix)
     elif action == "labeled":
         label = payload.get("label") or {}
         label_name = label.get("name") if isinstance(label, dict) else str(label)
-        provider = _extract_provider_from_label(label_name, TRIGGER_PREFIX)
+        provider = _extract_provider_from_label(label_name, settings.trigger_prefix)
     # else: action not handled
 
     if not provider:
-        reason = f"no label matching {TRIGGER_PREFIX}* for action={action}"
+        reason = f"no label matching {settings.trigger_prefix}* for action={action}"
         logger.info("Not triggering: %s", reason)
         return {"ok": True, "ignored": True, "reason": reason}
 
@@ -350,12 +318,12 @@ async def github_webhook(request: Request):
 
     logger.info("Triggered with provider=%s", provider)
 
-    repo_full = ((payload.get("repository") or {}).get("full_name"))
+    repo_full = (payload.get("repository") or {}).get("full_name")
     issue = payload.get("issue") or {}
     issue_number = issue.get("number")
     issue_title = issue.get("title", "")[:200]
     issue_url = issue.get("html_url", "")
-    installation_id = ((payload.get("installation") or {}).get("id"))
+    installation_id = (payload.get("installation") or {}).get("id")
 
     if not repo_full or not issue_number:
         logger.error("Missing repo_full or issue_number")
@@ -369,7 +337,17 @@ async def github_webhook(request: Request):
 
     batch, core = load_k8s_client()
 
-    github_token = await _generate_installation_token(str(installation_id))
+    try:
+        _, github_token = await source_provider.get_clone_credentials(repo_full)
+    except SourceProviderConfigurationError as ex:
+        logger.exception("Source provider configuration error: %s", ex)
+        raise HTTPException(status_code=500, detail="source provider is not configured") from ex
+    except SourceProviderAPIError as ex:
+        logger.exception("Source provider API error: %s", ex)
+        raise HTTPException(status_code=502, detail="source provider API request failed") from ex
+    except SourceProviderError as ex:
+        logger.exception("Source provider error: %s", ex)
+        raise HTTPException(status_code=500, detail="source provider error") from ex
     token_secret_name = safe_name(f"{job_name}-gh-token")
     _create_or_replace_secret(core, token_secret_name, {"GITHUB_TOKEN": github_token})
 
@@ -389,11 +367,11 @@ async def github_webhook(request: Request):
     )
 
     # --- Logging around create_namespaced_job ---
-    logger.info("Creating Job: name=%s namespace=%s image=%s", job_name, NAMESPACE, cfg.image)
+    logger.info("Creating Job: name=%s namespace=%s image=%s", job_name, settings.namespace, cfg.image)
     # logger.debug("Job body: %s", job)  # inutile en prod (peut contenir secrets)
 
     try:
-        created_obj = batch.create_namespaced_job(namespace=NAMESPACE, body=job)
+        created_obj = batch.create_namespaced_job(namespace=settings.namespace, body=job)
         created_name = getattr(created_obj.metadata, "name", None)
         created_uid = getattr(created_obj.metadata, "uid", None)
         logger.info("K8s Job created: name=%s uid=%s", created_name, created_uid)
@@ -405,31 +383,39 @@ async def github_webhook(request: Request):
         created = True
     except ApiException as e:
         # show useful details for debugging
-        logger.exception("ApiException creating job: status=%s reason=%s ", getattr(e, "status", None), getattr(e, "reason", None))
+        logger.exception(
+            "ApiException creating job: status=%s reason=%s ",
+            getattr(e, "status", None),
+            getattr(e, "reason", None),
+        )
         if getattr(e, "status", None) == 409:
             _delete_secret_if_exists(core, token_secret_name)
             logger.info("Job already exists (idempotent): %s", job_name)
             created = False
         else:
             _delete_secret_if_exists(core, token_secret_name)
-            raise HTTPException(status_code=500, detail=f"k8s error creating job: {getattr(e,'reason',None)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"k8s error creating job: {getattr(e, 'reason', None)}",
+            ) from e
     except Exception as ex:
         _delete_secret_if_exists(core, token_secret_name)
         logger.exception("Unexpected error creating job: %s", ex)
-        raise HTTPException(status_code=500, detail="internal error")
+        raise HTTPException(status_code=500, detail="internal error") from ex
 
     return {
         "ok": True,
         "triggered": True,
         "created": created,
         "job": job_name,
-        "namespace": NAMESPACE,
+        "namespace": settings.namespace,
         "repo": repo_full,
         "issue_number": issue_number,
         "action": action,
         "provider": provider,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     }
+
 
 @app.post("/jobs/run")
 def run_job(_auth: bool = Depends(verify_admin_token)):
@@ -438,7 +424,7 @@ def run_job(_auth: bool = Depends(verify_admin_token)):
 
     container = client.V1Container(
         name="worker",
-        image=CLAUDE_WORKER_IMAGE,
+        image=settings.claude_worker_image,
         image_pull_policy="Never",
     )
 
@@ -455,39 +441,33 @@ def run_job(_auth: bool = Depends(verify_admin_token)):
     job = client.V1Job(
         api_version="batch/v1",
         kind="Job",
-        metadata=client.V1ObjectMeta(name=job_name, namespace=NAMESPACE),
+        metadata=client.V1ObjectMeta(name=job_name, namespace=settings.namespace),
         spec=job_spec,
     )
 
     batch, _ = load_k8s_client()
-    logger.info("Manual run: creating job %s in %s", job_name, NAMESPACE)
+    logger.info("Manual run: creating job %s in %s", job_name, settings.namespace)
     try:
-        batch.create_namespaced_job(namespace=NAMESPACE, body=job)
+        batch.create_namespaced_job(namespace=settings.namespace, body=job)
     except ApiException as e:
-        logger.exception("ApiException creating manual job: status=%s reason=%s", getattr(e, "status", None), getattr(e, "reason", None))
-        raise HTTPException(status_code=500, detail=f"k8s error creating job: {getattr(e,'reason',None)}")
+        logger.exception(
+            "ApiException creating manual job: status=%s reason=%s",
+            getattr(e, "status", None),
+            getattr(e, "reason", None),
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"k8s error creating job: {getattr(e, 'reason', None)}",
+        ) from e
 
     return {"status": "started", "job_name": job_name}
 
-def verify_github_signature(secret: str, body: bytes, signature_header: str | None) -> bool:
-    if not secret:
-        logger.error("WEBHOOK_SECRET is not configured — rejecting all webhooks")
-        return False
-    if not signature_header:
-        return False
-    if not signature_header.startswith("sha256="):
-        return False
-
-    their_sig = signature_header.split("=", 1)[1].strip()
-    mac = hmac.new(secret.encode("utf-8"), msg=body, digestmod=hashlib.sha256)
-    our_sig = mac.hexdigest()
-    return hmac.compare_digest(our_sig, their_sig)
 
 def _extract_provider_from_label(label_name: str | None, prefix: str) -> str | None:
     """Return validated provider suffix if label matches prefix, else None."""
     if not label_name or not label_name.startswith(prefix) or len(label_name) <= len(prefix):
         return None
-    suffix = label_name[len(prefix):]
+    suffix = label_name[len(prefix) :]
     if suffix in PROVIDER_CONFIG:
         return suffix
     return None
@@ -503,6 +483,8 @@ def issue_find_provider(payload: dict, prefix: str) -> str | None:
             return result
     return None
 
+
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("app:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")), log_level="info")

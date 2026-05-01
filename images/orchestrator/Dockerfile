@@ -22,6 +22,7 @@ RUN pip install --upgrade pip \
 
 # code
 COPY app/ /srv/app/
+COPY providers/ /srv/providers/
 
 EXPOSE 8080
 
