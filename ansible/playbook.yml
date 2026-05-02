@@ -197,6 +197,7 @@
           stringData:
             JOB_TTL_SECONDS: "3600"
             ADMIN_TOKEN: "{{ admin_token }}"
+            AIDER_MODEL: "{{ aider_model }}"
       register: apply_secret_orchestrator_cfg
       changed_when: "'created' in apply_secret_orchestrator_cfg.stdout or 'configured' in apply_secret_orchestrator_cfg.stdout"
       # no_log: true

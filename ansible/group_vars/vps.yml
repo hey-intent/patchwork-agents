@@ -36,3 +36,4 @@ openrouter_api_key: ""
 # --- Traefik / TLS ---
 traefik_acme_email: "you@example.com"
 ingress_host: "bot.yourdomain.com"
+aider_model: "openrouter/anthropic/claude-sonnet-4"
