@@ -245,6 +245,10 @@ async def test_normal_issue_comment_does_not_trigger_job(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_known_but_unimplemented_action_sets_awaiting_human(monkeypatch):
+    import app.agent_orchestrator as agent_orchestrator_module
+
+    monkeypatch.setattr(agent_orchestrator_module, "IMPLEMENTED_ACTIONS", frozenset({"implement"}))
+
     payload = load_payload("issue_labeled.json")
     event = issue_comment_event(payload, body="/agent plan")
 

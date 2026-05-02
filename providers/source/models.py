@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Literal, get_args
 
 from pydantic import BaseModel, Field
 
@@ -43,6 +43,8 @@ class PullRequest(BaseModel):
 
 
 ActionName = Literal["spec", "plan", "implement", "review", "continue"]
+
+AGENT_ACTION_NAMES: frozenset[str] = frozenset(get_args(ActionName))
 
 
 class ActionTrigger(BaseModel):

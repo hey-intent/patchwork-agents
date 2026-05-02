@@ -12,7 +12,7 @@ import httpx
 import jwt
 
 from .base import SourceProvider, SourceProviderAPIError, SourceProviderConfigurationError
-from .models import ActionTrigger, Comment, Issue, PullRequest, WebhookEvent
+from .models import AGENT_ACTION_NAMES, ActionTrigger, Comment, Issue, PullRequest, WebhookEvent
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -21,7 +21,6 @@ GITHUB_SIGNATURE_HEX_LENGTH = 64
 JWT_LEEWAY_SECONDS = 60
 JWT_TTL_SECONDS = 600
 DEFAULT_INSTALLATION_TOKEN_TTL_SECONDS = 3300
-AGENT_ACTIONS = {"spec", "plan", "implement", "review", "continue"}
 ACTION_TRIGGER_COMMAND_MAX_CHARS = 64
 ACTION_TRIGGER_ALLOWED_PERMISSIONS = {"write", "maintain", "admin"}
 
@@ -177,7 +176,7 @@ class GitHubProvider(SourceProvider):
             if len(parts) < 2 or parts[0] != "/agent":
                 continue
             action = parts[1].lower()
-            if action not in AGENT_ACTIONS:
+            if action not in AGENT_ACTION_NAMES:
                 continue
             raw_command = f"/agent {action}"[:ACTION_TRIGGER_COMMAND_MAX_CHARS]
             return ActionTrigger(action=action, source="comment", raw_command=raw_command)

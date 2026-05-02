@@ -94,12 +94,12 @@ metadata:
     traefik.ingress.kubernetes.io/router.tls.certresolver: le
 spec:
   ingressClassName: traefik
-  # Replace bot.yourdomain.com with your domain (Ansible does this automatically)
+  # Set ORCHESTRATOR_HOST before applying: envsubst < k8s/orchestrator.yaml | kubectl apply -f -
   tls:
     - hosts:
-        - bot.yourdomain.com
+        - ${ORCHESTRATOR_HOST}
   rules:
-    - host: bot.yourdomain.com
+    - host: ${ORCHESTRATOR_HOST}
       http:
         paths:
           - path: /webhook/github
