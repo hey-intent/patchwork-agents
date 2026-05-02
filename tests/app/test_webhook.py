@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from kubernetes.client.rest import ApiException
 
 import app.app as app_module
 from app.agent_orchestrator import MAX_ISSUE_BODY_CHARS
@@ -58,10 +59,13 @@ class FakeSourceProvider:
 
 
 class FakeBatch:
-    def __init__(self) -> None:
+    def __init__(self, *, create_exception: Exception | None = None) -> None:
         self.created_jobs = []
+        self.create_exception = create_exception
 
     def create_namespaced_job(self, *, namespace: str, body):
+        if self.create_exception:
+            raise self.create_exception
         self.created_jobs.append((namespace, body))
         return SimpleNamespace(metadata=SimpleNamespace(name=body.metadata.name, uid="job-uid"))
 
@@ -70,6 +74,7 @@ class FakeCore:
     def __init__(self) -> None:
         self.secrets = []
         self.secret_patches = []
+        self.deleted_secrets = []
 
     def create_namespaced_secret(self, *, namespace: str, body) -> None:
         self.secrets.append((namespace, body))
@@ -79,6 +84,9 @@ class FakeCore:
 
     def patch_namespaced_secret_status(self, *args, **kwargs) -> None:
         pass
+
+    def delete_namespaced_secret(self, *, name: str, namespace: str) -> None:
+        self.deleted_secrets.append((namespace, name))
 
 
 def load_payload(name: str) -> dict:
@@ -133,10 +141,16 @@ def issue_comment_event(
     )
 
 
-async def post_event(monkeypatch, event: WebhookEvent, provider: FakeSourceProvider | None = None):
+async def post_event(
+    monkeypatch,
+    event: WebhookEvent,
+    provider: FakeSourceProvider | None = None,
+    batch: FakeBatch | None = None,
+    core: FakeCore | None = None,
+):
     fake_provider = provider or FakeSourceProvider(event=event)
-    batch = FakeBatch()
-    core = FakeCore()
+    batch = batch or FakeBatch()
+    core = core or FakeCore()
     monkeypatch.setattr(app_module, "get_source_provider", lambda: fake_provider)
     monkeypatch.setattr(app_module, "load_k8s_client", lambda: (batch, core))
     response = await post_webhook(
@@ -205,16 +219,66 @@ async def test_agent_implement_comment_triggers_worker_job(monkeypatch):
     assert data["issue_number"] == 7
     assert data["action"] == "implement"
     assert data["provider"] == "claude"
+    assert data["job"] == "ai-pr-7-implement-claude-acme-widgets"
     assert len(core.secrets) == 1
     assert core.secrets[0][1].string_data == {"GITHUB_TOKEN": "installation-token"}
     assert len(batch.created_jobs) == 1
     assert provider.replaced_labels == [("acme/widgets", "7", ["bug", "ai-pr-claude", "agent:status:running"])]
+    assert provider.comments == [
+        (
+            "acme/widgets",
+            "7",
+            "Agent action `implement` started with provider `claude` (job `ai-pr-7-implement-claude-acme-widgets`).",
+        )
+    ]
 
     env_plain = plain_env_from_job(batch)
     assert env_plain["SOURCE_ISSUE_BODY"] == payload["issue"]["body"]
     assert env_plain["SOURCE_ACTION"] == "implement"
     assert env_plain["SOURCE_TRIGGER"] == "comment"
     assert env_plain["SOURCE_TRIGGER_COMMAND"] == "/agent implement"
+
+
+@pytest.mark.asyncio
+async def test_agent_action_is_in_worker_job_name(monkeypatch):
+    payload = load_payload("issue_labeled.json")
+    event = issue_comment_event(payload, body="/agent plan")
+
+    response, batch, _core, provider = await post_event(monkeypatch, event)
+
+    assert response.status_code == 200
+    assert response.json()["job"] == "ai-pr-7-plan-claude-acme-widgets"
+    assert batch.created_jobs[0][1].metadata.name == "ai-pr-7-plan-claude-acme-widgets"
+    assert provider.comments == [
+        (
+            "acme/widgets",
+            "7",
+            "Agent action `plan` started with provider `claude` (job `ai-pr-7-plan-claude-acme-widgets`).",
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_agent_duplicate_job_feedback_mentions_issue_action(monkeypatch):
+    payload = load_payload("issue_labeled.json")
+    batch = FakeBatch(create_exception=ApiException(status=409, reason="Conflict"))
+
+    response, _batch, core, provider = await post_event(monkeypatch, issue_comment_event(payload), batch=batch)
+
+    assert response.status_code == 200
+    assert response.json()["created"] is False
+    assert batch.created_jobs == []
+    assert core.deleted_secrets == [("ai-bot", "ai-pr-7-implement-claude-acme-widgets-gh-token")]
+    assert provider.replaced_labels == [
+        ("acme/widgets", "7", ["bug", "ai-pr-claude", "agent:status:awaiting-human"])
+    ]
+    assert provider.comments == [
+        (
+            "acme/widgets",
+            "7",
+            "Agent command was received, but a worker job for this issue/action already exists.",
+        )
+    ]
 
 
 @pytest.mark.asyncio
@@ -236,11 +300,12 @@ async def test_normal_issue_comment_does_not_trigger_job(monkeypatch):
     payload = load_payload("issue_labeled.json")
     event = issue_comment_event(payload, body="normal comment")
 
-    response, batch, _core, _provider = await post_event(monkeypatch, event)
+    response, batch, _core, provider = await post_event(monkeypatch, event)
 
     assert response.status_code == 200
     assert response.json()["ignored"] is True
     assert batch.created_jobs == []
+    assert provider.comments == []
 
 
 @pytest.mark.asyncio

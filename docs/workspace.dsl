@@ -118,7 +118,7 @@ workspace "PatchworkAgent" "Kubernetes-native system that automatically solves G
             orchestrator -> secrets "4. Reads GitHub App PEM + webhook secret"
             orchestrator -> github "5. Generates installation token (JWT -> installation token)"
             orchestrator -> k8sApi "6. Creates ephemeral Secret with GITHUB_TOKEN"
-            orchestrator -> k8sApi "7. Creates Job (ai-pr-*-claude)"
+            orchestrator -> k8sApi "7. Creates Job (ai-pr-<issue>-<action>-<provider>-*)"
             k8sApi -> workerClaude "8. Schedules worker pod"
             workerClaude -> secrets "9. Reads ANTHROPIC_API_KEY + ephemeral GITHUB_TOKEN"
             workerClaude -> github "10. Clones repository"

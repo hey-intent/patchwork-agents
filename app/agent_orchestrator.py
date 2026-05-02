@@ -151,7 +151,8 @@ class AgentOrchestrator:
             logger.error("Missing source installation id in source event")
             raise HTTPException(status_code=400, detail="missing source installation id")
 
-        job_name = self.safe_name(f"ai-pr-{repo_full.replace('/', '-')}-{issue_number}-{provider}")
+        repo_slug = repo_full.replace("/", "-")
+        job_name = self.safe_name(f"ai-pr-{issue_number}-{trigger.action}-{provider}-{repo_slug}")
         batch, core = self.load_k8s_client()
 
         try:
@@ -215,6 +216,11 @@ class AgentOrchestrator:
                 issue.labels,
                 AGENT_STATUS_RUNNING,
             )
+            await source_provider.add_issue_comment(
+                repo_full,
+                issue_id,
+                f"Agent action `{trigger.action}` started with provider `{provider}` (job `{job_name}`).",
+            )
             created = True
         except ApiException as e:
             logger.exception(
@@ -235,7 +241,7 @@ class AgentOrchestrator:
                 await source_provider.add_issue_comment(
                     repo_full,
                     issue_id,
-                    "Agent command was received, but a worker job for this issue already exists.",
+                    "Agent command was received, but a worker job for this issue/action already exists.",
                 )
                 created = False
             else:
