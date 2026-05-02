@@ -35,6 +35,11 @@ spec:
                 secretKeyRef:
                   name: orchestrator-config
                   key: ADMIN_TOKEN
+            - name: AIDER_MODEL
+              valueFrom:
+                secretKeyRef:
+                  name: orchestrator-config
+                  key: AIDER_MODEL
             - name: WEBHOOK_SECRET
               valueFrom:
                 secretKeyRef:

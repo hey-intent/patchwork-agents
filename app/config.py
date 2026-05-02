@@ -20,6 +20,7 @@ class Settings:
     claude_worker_image: str = os.getenv("CLAUDE_WORKER_IMAGE", "worker-claude:latest")
     codex_worker_image: str = os.getenv("CODEX_WORKER_IMAGE", "worker-codex:latest")
     aider_worker_image: str = os.getenv("AIDER_WORKER_IMAGE", "worker-aider:latest")
+    aider_model: str = os.getenv("AIDER_MODEL", "openrouter/anthropic/claude-sonnet-4")
 
     github_app_id: str = os.getenv("GITHUB_APP_ID", "")
     github_private_key: str = os.getenv("GITHUB_PRIVATE_KEY", "")
@@ -59,5 +60,6 @@ PROVIDER_CONFIG: dict[str, ProviderConfig] = {
         image=settings.aider_worker_image,
         ai_provider="aider",
         api_secret=ProviderSecretRef("OPENROUTER_API_KEY", "openrouter-api-key", "OPENROUTER_API_KEY"),
+        extra_env=(("AIDER_MODEL", settings.aider_model),),
     ),
 }
