@@ -1,8 +1,18 @@
 from .base import SourceProvider, SourceProviderAPIError, SourceProviderConfigurationError, SourceProviderError
 from .factory import get_provider, register_provider
-from .models import ActionName, ActionTrigger, Comment, Issue, PullRequest, WebhookEvent, WebhookEventType
+from .models import (
+    AGENT_ACTION_NAMES,
+    ActionName,
+    ActionTrigger,
+    Comment,
+    Issue,
+    PullRequest,
+    WebhookEvent,
+    WebhookEventType,
+)
 
 __all__ = [
+    "AGENT_ACTION_NAMES",
     "ActionName",
     "ActionTrigger",
     "Comment",

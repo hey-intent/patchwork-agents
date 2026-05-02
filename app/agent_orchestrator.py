@@ -15,10 +15,11 @@ from providers.source import (
     SourceProviderConfigurationError,
     SourceProviderError,
 )
+from providers.source.models import AGENT_ACTION_NAMES
 
 MAX_ISSUE_BODY_CHARS = 65536
 
-IMPLEMENTED_ACTIONS = {"implement"}
+IMPLEMENTED_ACTIONS = AGENT_ACTION_NAMES
 AGENT_STATUS_PREFIX = "agent:status:"
 AGENT_STATUS_IDLE = "agent:status:idle"
 AGENT_STATUS_RUNNING = "agent:status:running"

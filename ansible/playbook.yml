@@ -20,6 +20,7 @@
           - git
           - curl
           - jq
+          - gettext-base
         state: present
         update_cache: true
     - name: Add Docker GPG key
@@ -251,22 +252,18 @@
       when: openrouter_api_key | length > 0
       # no_log: true
 
-    - name: Copy orchestrator manifest to temporary file
+    - name: Write .env.k8s on VPS
       ansible.builtin.copy:
-        remote_src: true
-        src: "{{ project_dir }}/k8s/orchestrator.yaml"
-        dest: /tmp/orchestrator-rendered.yaml
-        mode: "0644"
-
-    - name: Patch ingress host in temporary manifest
-      ansible.builtin.replace:
-        path: /tmp/orchestrator-rendered.yaml
-        regexp: "bot\\.yourdomain\\.com"
-        replace: "{{ ingress_host }}"
+        dest: "{{ project_dir }}/.env.k8s"
+        content: "ORCHESTRATOR_HOST={{ ingress_host }}\n"
+        mode: "0600"
 
     - name: Apply orchestrator (Deployment + Service + Ingress)
-      ansible.builtin.command:
-        cmd: "k3s kubectl apply -f /tmp/orchestrator-rendered.yaml"
+      ansible.builtin.shell: |
+        set -a && . {{ project_dir }}/.env.k8s && set +a
+        envsubst < {{ project_dir }}/k8s/orchestrator.yaml | k3s kubectl apply -f -
+      args:
+        executable: /bin/bash
       register: apply_orchestrator
       changed_when: "'created' in apply_orchestrator.stdout or 'configured' in apply_orchestrator.stdout"
 
